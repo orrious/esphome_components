@@ -320,7 +320,9 @@ void setup() {
   digitalWrite(PIN_BOX_A_ACTION, LOW);
   digitalWrite(PIN_BOX_B_ACTION, LOW);
 
-  pinMode(PIN_REMOTE_ACTION, INPUT);
+  // Keep the action outputs low when the handset is unplugged or the input
+  // level shifter is floating.
+  pinMode(PIN_REMOTE_ACTION, INPUT_PULLDOWN);
   pinMode(PIN_BOX_A_AWAKE, INPUT);
   pinMode(PIN_BOX_B_AWAKE, INPUT);
   pinMode(PIN_REMOTE_AWAKE, INPUT);
