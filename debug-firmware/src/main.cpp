@@ -38,6 +38,8 @@ FrameParser box_b_parser{0x5A};
 
 bool pass_through = true;
 bool raw_logging = true;
+bool box_a_seen = false;
+bool box_b_seen = false;
 uint32_t action_until = 0;
 uint32_t default_action_ms = DEFAULT_ACTION_MS;
 uint32_t last_box_a_frame = 0;
@@ -130,7 +132,13 @@ void update_remote_awake() {
   // control box reports sleep; otherwise release the ESP32 output to high-Z.
   const bool box_a_awake = digitalRead(PIN_BOX_A_AWAKE) == HIGH;
   const bool box_b_awake = digitalRead(PIN_BOX_B_AWAKE) == HIGH;
-  if (box_a_awake && box_b_awake) {
+  // Keep the handset line released during bring-up until a box has actually
+  // answered on UART. This permits a one-box test with the other input open.
+  const bool any_box_seen = box_a_seen || box_b_seen;
+  const bool both_awake = box_a_seen && box_b_seen && box_a_awake && box_b_awake;
+  const bool only_a_awake = box_a_seen && !box_b_seen && box_a_awake;
+  const bool only_b_awake = box_b_seen && !box_a_seen && box_b_awake;
+  if (!any_box_seen || both_awake || only_a_awake || only_b_awake) {
     pinMode(PIN_REMOTE_AWAKE, INPUT);
   } else {
     pinMode(PIN_REMOTE_AWAKE, OUTPUT);
@@ -162,9 +170,11 @@ void handle_box_frame(const char *label, const uint8_t *frame, bool box_a) {
 
   const uint32_t now = millis();
   if (box_a) {
+    box_a_seen = true;
     last_box_a_frame = now;
     box_a_height = decode_height(frame);
   } else {
+    box_b_seen = true;
     last_box_b_frame = now;
     box_b_height = decode_height(frame);
   }
@@ -209,7 +219,8 @@ void print_status() {
                 !elapsed(millis(), action_until) ? "on" : "off",
                 digitalRead(PIN_REMOTE_ACTION), digitalRead(PIN_BOX_A_AWAKE),
                 digitalRead(PIN_BOX_B_AWAKE));
-  Serial.printf("heightA=%.1f heightB=%.1f lastA=%lu ms lastB=%lu ms\n",
+  Serial.printf("seenA=%d seenB=%d heightA=%.1f heightB=%.1f lastA=%lu ms lastB=%lu ms\n",
+                box_a_seen, box_b_seen,
                 box_a_height, box_b_height,
                 static_cast<unsigned long>(millis() - last_box_a_frame),
                 static_cast<unsigned long>(millis() - last_box_b_frame));
