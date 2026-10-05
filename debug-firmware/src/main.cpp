@@ -36,7 +36,8 @@ FrameParser remote_parser{0xA5};
 FrameParser box_a_parser{0x5A};
 FrameParser box_b_parser{0x5A};
 
-bool pass_through = true;
+bool pass_through = false;
+bool armed = false;
 bool raw_logging = true;
 bool box_a_seen = false;
 bool box_b_seen = false;
@@ -122,7 +123,7 @@ void begin_action(uint32_t duration_ms) {
 void update_action_lines() {
   const bool pulse_active = !elapsed(millis(), action_until);
   const bool remote_active = digitalRead(PIN_REMOTE_ACTION) == HIGH;
-  const bool active = pulse_active || remote_active;
+  const bool active = armed && (pulse_active || remote_active);
   digitalWrite(PIN_BOX_A_ACTION, active ? HIGH : LOW);
   digitalWrite(PIN_BOX_B_ACTION, active ? HIGH : LOW);
 }
@@ -159,7 +160,11 @@ void handle_remote_frame(const uint8_t *frame) {
     return;
   }
   if (raw_logging) print_frame("RX REMOTE", frame);
-  if (pass_through) send_to_boxes(frame, 0);
+  if (pass_through && armed) {
+    send_to_boxes(frame, 0);
+  } else if (raw_logging) {
+    Serial.println("  command blocked while disarmed or pass-through is off");
+  }
 }
 
 void handle_box_frame(const char *label, const uint8_t *frame, bool box_a) {
@@ -192,16 +197,17 @@ void handle_box_frame(const char *label, const uint8_t *frame, bool box_a) {
 
   // Only one response may be placed on the remote's RX line. Prefer box A;
   // use box B only when box A has gone quiet.
-  if (box_a || elapsed(now, last_box_a_frame + BOX_FALLBACK_MS)) {
+  if (armed && (box_a || elapsed(now, last_box_a_frame + BOX_FALLBACK_MS))) {
     remote_uart.write(frame, 5);
   }
 }
 
 void poll_uart(HardwareSerial &uart, FrameParser &parser,
-               void (*handler)(const uint8_t *)) {
+               const char *label, void (*handler)(const uint8_t *)) {
   uint8_t frame[5];
   while (uart.available()) {
     const uint8_t byte = static_cast<uint8_t>(uart.read());
+    if (raw_logging) Serial.printf("BYTE %s %02X\n", label, byte);
     if (frame_complete(parser, byte, frame)) handler(frame);
   }
 }
@@ -209,13 +215,16 @@ void poll_uart(HardwareSerial &uart, FrameParser &parser,
 void handle_box_a(const uint8_t *frame) { handle_box_frame("RX BOX A", frame, true); }
 void handle_box_b(const uint8_t *frame) { handle_box_frame("RX BOX B", frame, false); }
 
-void poll_remote() { poll_uart(remote_uart, remote_parser, handle_remote_frame); }
-void poll_box_a() { poll_uart(box_a_uart, box_a_parser, handle_box_a); }
-void poll_box_b() { poll_uart(box_b_uart, box_b_parser, handle_box_b); }
+void poll_remote() {
+  poll_uart(remote_uart, remote_parser, "REMOTE_RX", handle_remote_frame);
+}
+void poll_box_a() { poll_uart(box_a_uart, box_a_parser, "BOX_A_RX", handle_box_a); }
+void poll_box_b() { poll_uart(box_b_uart, box_b_parser, "BOX_B_RX", handle_box_b); }
 
 void print_status() {
-  Serial.printf("pass=%s raw=%s action=%s remote_action=%d awakeA=%d awakeB=%d\n",
-                pass_through ? "on" : "off", raw_logging ? "on" : "off",
+  Serial.printf("armed=%s pass=%s raw=%s action=%s remote_action=%d awakeA=%d awakeB=%d\n",
+                armed ? "yes" : "no", pass_through ? "on" : "off",
+                raw_logging ? "on" : "off",
                 !elapsed(millis(), action_until) ? "on" : "off",
                 digitalRead(PIN_REMOTE_ACTION), digitalRead(PIN_BOX_A_AWAKE),
                 digitalRead(PIN_BOX_B_AWAKE));
@@ -235,7 +244,7 @@ void process_command(char *line) {
   if (*line == '\0') return;
 
   if (strcmp(line, "help") == 0) {
-    Serial.println("Commands: status, up, down, stop, m, preset 1..4");
+    Serial.println("Commands: status, arm, disarm, up, down, stop, m, preset 1..4");
     Serial.println("          raw a5 00 20 df ff, pass on|off, raw on|off");
     Serial.println("          pulse <milliseconds>");
     return;
@@ -244,25 +253,54 @@ void process_command(char *line) {
     print_status();
     return;
   }
+  if (strcmp(line, "arm") == 0) {
+    armed = true;
+    Serial.println("bridge armed; movement and pass-through are enabled only if pass is on");
+    return;
+  }
+  if (strcmp(line, "disarm") == 0) {
+    armed = false;
+    action_until = 0;
+    digitalWrite(PIN_BOX_A_ACTION, LOW);
+    digitalWrite(PIN_BOX_B_ACTION, LOW);
+    Serial.println("bridge disarmed; action outputs low");
+    return;
+  }
   if (strcmp(line, "up") == 0) {
+    if (!armed) {
+      Serial.println("blocked: type arm first");
+      return;
+    }
     send_named_command(CMD_UP);
     return;
   }
   if (strcmp(line, "down") == 0) {
+    if (!armed) {
+      Serial.println("blocked: type arm first");
+      return;
+    }
     send_named_command(CMD_DOWN);
     return;
   }
   if (strcmp(line, "stop") == 0) {
-    send_named_command(CMD_IDLE);
+    send_to_boxes(CMD_IDLE, 0);
     return;
   }
   if (strcmp(line, "m") == 0) {
+    if (!armed) {
+      Serial.println("blocked: type arm first");
+      return;
+    }
     send_named_command(CMD_M);
     return;
   }
 
   int preset = 0;
   if (sscanf(line, "preset %d", &preset) == 1 && preset >= 1 && preset <= 4) {
+    if (!armed) {
+      Serial.println("blocked: type arm first");
+      return;
+    }
     send_named_command(CMD_MEMORY[preset - 1]);
     return;
   }
@@ -303,6 +341,10 @@ void process_command(char *line) {
     for (int i = 0; i < 5; i++) frame[i] = static_cast<uint8_t>(values[i]);
     if (!valid_command(frame)) {
       Serial.println("raw command rejected: invalid A5 checksum/frame");
+      return;
+    }
+    if (!armed && !(frame[2] == 0x00 && frame[3] == 0xFF)) {
+      Serial.println("raw command blocked while disarmed; type arm first");
       return;
     }
     send_named_command(frame);
@@ -348,7 +390,7 @@ void setup() {
   box_b_uart.begin(UART_BAUD, SERIAL_8N1, PIN_BOX_B_RX, PIN_BOX_B_TX);
 
   Serial.println("UARTs ready: remote=UART2, boxA=UART1, boxB=UART0");
-  Serial.println("Action outputs are low; remote pass-through is ON");
+  Serial.println("Action outputs are low; bridge is disarmed and pass-through is OFF");
   Serial.println("Type help for commands");
 }
 

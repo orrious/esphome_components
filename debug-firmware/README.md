@@ -50,8 +50,9 @@ raw on|off         # enable or disable frame logging
 raw a5 00 20 df ff # send a validated command to both boxes
 ```
 
-The firmware starts with action outputs low and pass-through enabled. Begin
-testing with the remote disconnected and one control box connected. Use
-`status`, then `stop`, before testing movement. Add the second box only after
-the first box responds correctly.
-
+The firmware starts disarmed, with action outputs low and pass-through
+disabled. It logs every received byte as `BYTE REMOTE_RX`, `BYTE BOX_A_RX`, or
+`BYTE BOX_B_RX`, which lets us see startup traffic without forwarding it.
+Begin testing with the remote disconnected and one control box connected. Use
+`status` and inspect the byte log before typing `arm` or enabling pass-through.
+Add the second box only after the first box responds correctly.
