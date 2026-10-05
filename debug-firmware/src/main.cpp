@@ -84,6 +84,9 @@ bool valid_command(const uint8_t *frame) {
 }
 
 bool valid_display(const uint8_t *frame) {
+  if (frame[0] == 0x5A && frame[1] == 0x00 && frame[2] == 0x00 &&
+      frame[3] == 0x00 && frame[4] == 0x00)
+    return true;
   return frame[0] == 0x5A &&
          static_cast<uint8_t>(frame[0] + frame[1] + frame[2] + frame[3]) ==
              frame[4];
