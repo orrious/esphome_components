@@ -41,8 +41,8 @@ external_components:
 # UART0/1/2 are routed to these GPIOs by the ESP32-S3 GPIO matrix.
 uart:
   - id: remote_bus
-    rx_pin: 12
-    tx_pin: 13
+    rx_pin: 2
+    tx_pin: 1
     baud_rate: 9600
     data_bits: 8
     parity: NONE
@@ -57,8 +57,8 @@ uart:
     stop_bits: 1
 
   - id: box_b_bus
-    rx_pin: 8
-    tx_pin: 9
+    rx_pin: 15
+    tx_pin: 16
     baud_rate: 9600
     data_bits: 8
     parity: NONE
@@ -72,20 +72,19 @@ jsdrive:
   message_length: 5
 
   # Handset pin 5 -> ESP32 input. The component mirrors it to both boxes.
-  remote_action_pin: 14
+  remote_action_pin: 39
   # ESP32 outputs to each box's pin 5.
-  box_a_action_pin: 6
-  box_b_action_pin: 10
+  box_a_action_pin: 9
+  box_b_action_pin: 11
 
   # Each box's pin 8 -> ESP32 input.
-  box_a_awake_pin: 7
-  box_b_awake_pin: 11
+  box_a_awake_pin: 41
+  box_b_awake_pin: 40
 
-  # ESP32 open-drain output -> handset pin 8. Configure the level-shifter
-  # channel as open-drain/high-impedance capable; never drive this push-pull.
-  remote_awake_pin:
-    number: 15
-    mode: OUTPUT_OPEN_DRAIN
+  # GPIO48 -> SN74AHCT125N pin 2 (1A); pin 1 (1OE) is grounded and pin 3
+  # (1Y) drives handset pin 8. The bridge drives HIGH only when both boxes'
+  # pin-8 inputs are HIGH.
+  remote_awake_pin: 48
 
   height:
     name: Desk Height

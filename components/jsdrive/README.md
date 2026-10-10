@@ -10,16 +10,16 @@ Example:
 ```yaml
 uart:
   - id: remote_bus
-    rx_pin: 12
-    tx_pin: 13
+    rx_pin: 2
+    tx_pin: 1
     baud_rate: 9600
   - id: box_a_bus
     rx_pin: 4
     tx_pin: 5
     baud_rate: 9600
   - id: box_b_bus
-    rx_pin: 8
-    tx_pin: 9
+    rx_pin: 15
+    tx_pin: 16
     baud_rate: 9600
 
 jsdrive:
@@ -28,15 +28,13 @@ jsdrive:
   desk_uart_a: box_a_bus
   desk_uart_b: box_b_bus
   message_length: 5
-  remote_action_pin: 14
-  box_a_action_pin: 6
-  box_b_action_pin: 10
-  box_a_awake_pin: 7
-  box_b_awake_pin: 11
-  # Use an open-drain level-shifter output for the handset pin 8.
-  remote_awake_pin:
-    number: 15
-    mode: OUTPUT_OPEN_DRAIN
+  remote_action_pin: 39
+  box_a_action_pin: 9
+  box_b_action_pin: 11
+  box_a_awake_pin: 41
+  box_b_awake_pin: 40
+  # GPIO48 -> SN74AHCT125N 1A; 1OE is grounded; 1Y -> handset pin 8.
+  remote_awake_pin: 48
   height:
     name: Desk Height
   height_a:
