@@ -69,7 +69,9 @@ jsdrive:
   remote_uart: remote_bus
   desk_uart_a: box_a_bus
   desk_uart_b: box_b_bus
-  message_length: 5
+  min_height: 25.9
+  max_height: 51.5
+  hard_skew: 0.5
 
   # Handset pin 5 -> ESP32 input. The component mirrors it to both boxes.
   remote_action_pin: 39
@@ -92,9 +94,67 @@ jsdrive:
     name: Control Box A Height
   height_b:
     name: Control Box B Height
+  height_difference:
+    name: Control Box Height Difference
+    unit_of_measurement: in
+  remote_frame_age:
+    name: Handset Frame Age
+  box_a_frame_age:
+    name: Control Box A Frame Age
+  box_b_frame_age:
+    name: Control Box B Frame Age
+  remote_invalid_frames:
+    name: Handset Invalid Frames
+  box_a_invalid_frames:
+    name: Control Box A Invalid Frames
+  box_b_invalid_frames:
+    name: Control Box B Invalid Frames
+  remote_tx_max_gap:
+    name: Handset Status Maximum Gap
+  box_a_tx_max_gap:
+    name: Control Box A Idle Maximum Gap
+  box_b_tx_max_gap:
+    name: Control Box B Idle Maximum Gap
+  alignment_attempts:
+    name: Desk Alignment Attempts
   in_sync:
     name: Control Boxes In Sync
     device_class: connectivity
+  height_known:
+    name: Desk Height Known
+  height_live:
+    name: Desk Height Live
+  healthy:
+    name: Desk Bridge Healthy
+    device_class: connectivity
+  remote_connected:
+    name: Handset Connected
+    device_class: connectivity
+  box_a_connected:
+    name: Control Box A Connected
+    device_class: connectivity
+  box_b_connected:
+    name: Control Box B Connected
+    device_class: connectivity
+  box_a_awake:
+    name: Control Box A Awake
+  box_b_awake:
+    name: Control Box B Awake
+  armed:
+    name: Desk Bridge Armed
+  moving:
+    name: Desk Moving
+
+  operation:
+    name: Desk Operation
+  last_fault:
+    name: Desk Last Fault
+  box_a_display:
+    name: Control Box A Display
+  box_b_display:
+    name: Control Box B Display
+  error_code:
+    name: Desk Error
 
   target_height:
     name: Target Desk Height
@@ -103,6 +163,28 @@ jsdrive:
   stop:
     name: Stop Desk
     icon: mdi:stop-circle
+  discover_height:
+    name: Discover Desk Height
+  recall_preset_1:
+    name: Recall Desk Preset 1
+  recall_preset_2:
+    name: Recall Desk Preset 2
+  recall_preset_3:
+    name: Recall Desk Preset 3
+  recall_preset_4:
+    name: Recall Desk Preset 4
+  save_preset_1:
+    name: Save Desk Preset 1
+  save_preset_2:
+    name: Save Desk Preset 2
+  save_preset_3:
+    name: Save Desk Preset 3
+  save_preset_4:
+    name: Save Desk Preset 4
+
+  cover:
+    name: Standing Desk
+    device_class: shade
 
   up:
     name: Remote Up
@@ -114,3 +196,5 @@ jsdrive:
     name: Remote Memory 2
   memory3:
     name: Remote Memory 3
+  memory4:
+    name: Remote Memory 4

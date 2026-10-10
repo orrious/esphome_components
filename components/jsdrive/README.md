@@ -1,69 +1,46 @@
-# ESPHome component for a JS-Drive / WP-CB01 desk bridge
+# WP-CB01 dual-control-box ESPHome bridge
 
-The component can bridge one handset to two synchronized control boxes. It
-forwards the validated 5-byte `A5` commands to both boxes, forwards one
-validated display response back to the handset, decodes each box's height, and
-publishes an in-sync binary sensor. The GPIOs are optional so the UART-only
-bridge can be brought up first.
+This external component makes an ESP32-S3 an active bridge between one
+WP-CB01 handset and two control boxes. Each UART is an independent protocol
+session. The bridge sends each peer synthesized state and never forwards one
+box's display frames blindly to the handset.
 
-Example:
-```yaml
-uart:
-  - id: remote_bus
-    rx_pin: 2
-    tx_pin: 1
-    baud_rate: 9600
-  - id: box_a_bus
-    rx_pin: 4
-    tx_pin: 5
-    baud_rate: 9600
-  - id: box_b_bus
-    rx_pin: 15
-    tx_pin: 16
-    baud_rate: 9600
+The complete, tested-shape configuration is in
+[`wp-cb01-dual.yaml`](../../wp-cb01-dual.yaml). It uses three 9600 8N1 UARTs,
+two box action outputs, two box awake inputs, the handset action input, and the
+handset awake output.
 
-jsdrive:
-  id: my_jsdrive
-  remote_uart: remote_bus
-  desk_uart_a: box_a_bus
-  desk_uart_b: box_b_bus
-  message_length: 5
-  remote_action_pin: 39
-  box_a_action_pin: 9
-  box_b_action_pin: 11
-  box_a_awake_pin: 41
-  box_b_awake_pin: 40
-  # GPIO48 -> SN74AHCT125N 1A; 1OE is grounded; 1Y -> handset pin 8.
-  remote_awake_pin: 48
-  height:
-    name: Desk Height
-  height_a:
-    name: Box A Height
-  height_b:
-    name: Box B Height
-  in_sync:
-    name: Control Boxes In Sync
-  target_height:
-    name: Target Desk Height
-  stop:
-    name: Stop Desk
-  up:
-    name: Up Button
-  down: 
-    name: Down Button
-  memory1:
-    name: Memory1 Button
-  memory2:
-    name: Memory2 Button
-  memory3:
-    name: Memory3 Button
-```
+## Home Assistant interface
 
-`height`, `height_a`, and `height_b` are sensors. `in_sync` is true only when
-both boxes have valid numeric display packets and differ by no more than 0.1.
-The button entities are binary sensors indicating handset command states.
-`target_height` and `stop` expose Home Assistant control without requiring a
-physical handset press. Target movement asserts both box action lines while
-periodically sending the corresponding Up or Down command.
+- a cover with position and stop control;
+- an absolute target-height number (25.9–51.5, 0.1 steps);
+- stop and height-discovery buttons;
+- recall and save buttons for presets 1–4;
+- confirmed, per-box, and difference height sensors;
+- connection, awake, synchronization, live-height, armed, movement, and
+  overall-health binary sensors;
+- operation, last-fault, per-box display, and decoded-error text sensors;
+- frame-age, invalid-frame, 10 ms transmitter-gap, and alignment diagnostics;
+- handset Up, Down, and preset-button binary sensors.
 
-There are methods `move_to(height)` and `stop()` that you can use in a lambda.
+The generated YAML actions are `jsdrive.set_height`, `jsdrive.stop`,
+`jsdrive.recall_preset`, `jsdrive.save_preset`, `jsdrive.discover_height`,
+`jsdrive.arm`, and `jsdrive.disarm`.
+
+## Movement rules
+
+Movement starts only when both box sessions are awake, responding, and have a
+trusted matching position. A missing live height starts the captured wake
+handshake; it never uses M as a height query. Absolute moves hold the direction
+command, release 0.3 from the target, then use 190 ms fine taps. Presets are
+monitored using matched height reports from both boxes. A physical handset
+command has priority over an API move.
+
+A 0.5 height split, link loss, transaction timeout, or invalid travel state
+lowers both action outputs, reports the reason, displays SOS on the handset,
+and disarms the bridge where continued movement would be unsafe. Small stopped
+offsets are corrected by bounded one-sided DOWN pulses to the higher box.
+
+GPIO48 is a 3.3 V logic output into the SN74AHCT125N. The example wiring uses
+pin 1 (`1OE`) to ground, GPIO48 to pin 2 (`1A`), and pin 3 (`1Y`) to handset
+pin 8. It is HIGH only when both independent box pin-8 inputs are HIGH.
