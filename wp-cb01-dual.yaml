@@ -33,9 +33,9 @@ external_components:
   - source:
       type: git
       url: https://github.com/orrious/esphome_components
-      ref: wp-cb01-dual-box
+      # Tested ESPHome component revision. Update deliberately after validation.
+      ref: ea4d3b2
     components: [jsdrive]
-    refresh: 1d
 
 # All three WP-CB01 links are 9600 baud, 8 data bits, no parity, 1 stop bit.
 # UART0/1/2 are routed to these GPIOs by the ESP32-S3 GPIO matrix.
