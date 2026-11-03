@@ -101,13 +101,24 @@ class JSDrive2 : public Component {
 
  protected:
   enum class DisplayState : uint8_t { UNKNOWN, BLANK, HEIGHT, MEMORY, ERROR, OTHER };
-  enum class MotionState : uint8_t { IDLE, DISCOVER_ASSERT, DISCOVER_WAIT, COARSE, FINE_PULSE, FINE_SETTLE, PRESET, SAVE_M, SAVE_SLOT, ALIGN_PULSE, ALIGN_SETTLE };
+  enum class MotionState : uint8_t { IDLE, DISCOVER_WAIT, COARSE, FINE_PULSE, FINE_SETTLE, PRESET, SAVE_M, SAVE_SLOT };
+  enum class WakeState : uint8_t { IDLE, ASSERT, HOLD, WAIT_HEIGHT, FAILED };
+  enum class AlignState : uint8_t { IDLE, PULSE, SETTLE };
+  enum class PresetPhase : uint8_t { IDLE, ANNOUNCEMENT, WAIT_MOTION, MOVING };
   struct Parser { uint8_t start{0}; uint8_t data[5]{}; uint8_t length{0}; uint32_t invalid{0}; };
+  struct HeightQueue {
+    static constexpr uint8_t CAPACITY = 8;
+    std::array<float, CAPACITY> values{};
+    std::array<uint32_t, CAPACITY> times{};
+    uint8_t count{0};
+  };
   struct Box {
     const char *name{nullptr};
     uart::UARTComponent *uart{nullptr}; GPIOPin *action_pin{nullptr}; GPIOPin *awake_pin{nullptr};
     Parser parser{0x5A}; bool seen{false}; bool awake{false}; bool action{false};
     uint32_t last_frame{0}, last_height{0}, last_change{0}, last_tx{0}, tx_count{0}, tx_errors{0}, max_tx_gap{0};
+    uint32_t sleep_low_since{0}, wake_started{0}, last_nonidle_tx{0};
+    bool wake_attempted{false}; WakeState wake{WakeState::IDLE};
     float live_height{NAN}, last_good{NAN}; DisplayState display{DisplayState::UNKNOWN};
     std::array<uint8_t, 3> glyph{{0,0,0}};
   };
@@ -116,11 +127,19 @@ class JSDrive2 : public Component {
   Box box_a_{"A"}, box_b_{"B"}; Parser remote_parser_{0xA5};
   GPIOPin *remote_action_pin_{nullptr}, *remote_awake_pin_{nullptr};
   bool armed_{true}, remote_seen_{false}, remote_action_{false}, remote_button_down_{false};
+  bool remote_wake_consumed_{false};
   uint8_t remote_command_{0}; uint32_t remote_last_frame_{0}, remote_last_tx_{0}, remote_tx_count_{0}, remote_tx_errors_{0}, remote_max_tx_gap_{0};
   float min_height_{25.9f}, max_height_{51.5f}, hard_skew_{0.5f}, confirmed_height_{NAN};
   MotionState motion_{MotionState::IDLE}; uint32_t motion_started_{0}, phase_started_{0}, last_command_tx_{0};
+  AlignState align_{AlignState::IDLE}; uint32_t align_started_{0};
+  uint8_t align_high_box_{0xFF}; uint8_t align_duration_{0};
+  uint32_t recovery_started_{0}, last_auto_wake_{0}; bool recovery_attempted_{false};
   float target_height_{NAN}; int8_t direction_{0}; uint8_t fine_taps_{0}, active_preset_{0}, save_preset_{0}, align_attempts_{0};
   bool preset_motion_seen_{false}, sos_{false}; uint32_t sos_until_{0};
+  PresetPhase preset_phase_{PresetPhase::IDLE}; HeightQueue preset_queue_a_{}, preset_queue_b_{};
+  float preset_start_{NAN}, preset_target_{NAN}, preset_raw_a_{NAN}, preset_raw_b_{NAN};
+  uint32_t preset_last_change_{0}, preset_first_motion_{0}, preset_pair_wait_{0};
+  bool preset_from_handset_{false}, preset_announcement_visible_{false};
   std::string fault_{"none"}, error_{"none"}; uint32_t last_publish_{0};
 
   sensor::Sensor *height_sensor_{nullptr}, *height_a_sensor_{nullptr}, *height_b_sensor_{nullptr}, *height_difference_sensor_{nullptr};
@@ -142,6 +161,7 @@ class JSDrive2 : public Component {
 
   static constexpr uint32_t STREAM_MS = 10, LINK_MS = 500, LIVE_MS = 150, TARGET_TIMEOUT_MS = 45000;
   static constexpr uint32_t FINE_PULSE_MS = 190, FINE_SETTLE_MS = 500, PRESET_PAIR_MS = 500;
+  static constexpr uint32_t ACTION_WATCHDOG_MS = 30, SLEEP_STABLE_MS = 50, WAKE_RETRY_MS = 3000;
   static constexpr float COARSE_RELEASE = 0.3f;
   static const uint8_t CMD_IDLE[5], CMD_UP[5], CMD_DOWN[5], CMD_M[5], CMD_PRESET[4][5];
   bool parse_(Parser &parser, uint8_t byte, uint8_t out[5]);
@@ -152,6 +172,20 @@ class JSDrive2 : public Component {
   void send_both_(const uint8_t frame[5], bool action);
   void send_remote_status_();
   void set_actions_(bool a, bool b);
+  void set_box_action_(Box &box, bool active);
+  void poll_action_watchdog_(uint32_t now);
+  void poll_box_idle_(Box &box, uint32_t now);
+  void start_wake_(Box &box);
+  void poll_wake_(Box &box, uint32_t now);
+  void poll_automatic_wake_(uint32_t now);
+  bool wake_ready_() const;
+  bool fresh_height_(const Box &box, uint32_t now) const;
+  void start_preset_(uint8_t preset, bool from_handset);
+  void clear_preset_();
+  void handle_preset_height_(Box &box, float height, uint32_t now);
+  void commit_preset_pair_(float height, uint32_t now);
+  void poll_preset_(uint32_t now);
+  bool recover_();
   bool box_ready_(const Box &box, uint32_t now) const;
   bool trusted_equal_() const;
   bool live_equal_() const;

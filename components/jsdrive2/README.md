@@ -36,8 +36,17 @@ Movement starts only when both box sessions are awake, responding, and have a
 trusted matching position. A missing live height starts the captured wake
 handshake; it never uses M as a height query. Absolute moves hold the direction
 command, release 0.3 from the target, then use 190 ms fine taps. Presets are
-monitored using matched height reports from both boxes. A physical handset
-command has priority over an API move.
+monitored using matched height reports from both boxes, including the matched
+destination announcement before physical travel. A physical handset command
+has priority over an API move. Handset UP and DOWN can continue across a one
+step reporting lag while both boxes remain below the hard skew limit. A held
+UP+DOWN chord can recover a disarmed bridge only after both boxes have settled.
+
+Each box has its own bounded wake attempt. The bridge keeps an independent
+10 ms idle stream to each box and a synthesized status stream to the handset.
+The handset display blanks when both box displays time out. Active pin 5 outputs
+have a 30 ms command watchdog, and a lost UART link or awake signal lowers
+the outputs. Simultaneous button masks are never sent to either box.
 
 A 0.5 height split, link loss, transaction timeout, or invalid travel state
 lowers both action outputs, reports the reason, displays SOS on the handset,
@@ -48,3 +57,10 @@ GPIO48 is a 3.3 V logic output into the SN74AHCT125N. The example wiring uses
 pin 1 (`1OE`) to ground, GPIO48 to pin 2 (`1A`), and pin 3 (`1Y`) to handset
 pin 8. It is HIGH from boot so the handset session can initialize independently
 of both physical box sessions.
+
+The component compiles with ESPHome 2026.10.2 and its host protocol tests run
+with `bash tests/host/run.sh` from the repository root. The host tests cover
+quick repeated presses, watchdog release, the hard skew stop, preset height
+pairing, handset display timeout, and independent wake. The ESPHome firmware
+has not yet been flashed to the installed desk, so those behaviors still need
+hardware validation before replacing the debug firmware.

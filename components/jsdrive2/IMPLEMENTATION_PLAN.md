@@ -107,20 +107,22 @@ validated wiring:
 GPIO48 drives SN74AHCT125N pin 2 (`1A`), pin 1 (`1OE`) is grounded, and pin 3
 (`1Y`) drives handset pin 8.
 
-## 5. Delivery sequence
+## 5. Delivery sequence and current status
 
-1. Extract/port frame parsing, display decoding, independent sessions, and
-   synthesized handset status. Compile with ESPHome and validate with no motors.
-2. Port handset pass-through, wake discovery, link health, and emergency stop.
-3. Port presets and save-memory transactions; validate handset and HA invoke the
-   same state machines.
-4. Port target-height coarse/fine control and alignment policy.
-5. Add all sensors, text sensors, buttons, cover, actions, and diagnostic
+1. Done: port frame parsing, display decoding, independent sessions, and
+   synthesized handset status; compile with ESPHome.
+2. Done in source: handset command handling, independent wake discovery, link
+   health, 30 ms action watchdog, and emergency stop.
+3. Done in source: preset announcement and physical-travel pairing, retarget,
+   cancellation, and save-memory transaction. Host protocol tests cover the
+   announcement and skipped display steps. Hardware validation remains.
+4. Done in source: target-height coarse/fine control and bounded alignment.
+5. Done: sensors, text sensors, buttons, cover, actions, and diagnostic
    counters.
-6. Run disconnected protocol tests, then one-box no-motion tests, then two-box
+6. Pending: run one-box no-motion tests, then two-box
    synchronized movement tests with the 0.5 hard stop enabled throughout.
-7. Commit and push the branch used by `external_components`, pin the YAML to a
-   tested commit or release tag, and remove the one-day moving branch refresh.
+7. Pending after hardware validation: pin the YAML to a tested commit or release
+   tag rather than the moving development branch.
 
 ## Acceptance criteria
 

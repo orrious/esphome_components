@@ -2,6 +2,7 @@
 #include "esphome/core/log.h"
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 namespace esphome {
 namespace jsdrive2 {
@@ -67,9 +68,12 @@ void JSDrive2::poll_uart_(uart::UARTComponent *uart, Parser &parser, bool remote
 }
 
 void JSDrive2::set_actions_(bool a, bool b) {
-  if (box_a_.action_pin != nullptr) box_a_.action_pin->digital_write(a);
-  if (box_b_.action_pin != nullptr) box_b_.action_pin->digital_write(b);
-  box_a_.action=a; box_b_.action=b;
+  set_box_action_(box_a_, a); set_box_action_(box_b_, b);
+}
+
+void JSDrive2::set_box_action_(Box &box, bool active) {
+  if (box.action_pin != nullptr) box.action_pin->digital_write(active);
+  box.action=active;
 }
 
 void JSDrive2::send_box_(Box &box, const uint8_t frame[5]) {
@@ -77,6 +81,7 @@ void JSDrive2::send_box_(Box &box, const uint8_t frame[5]) {
   uint32_t now=millis();
   if (box.last_tx && now-box.last_tx>box.max_tx_gap) box.max_tx_gap=now-box.last_tx;
   box.last_tx=now; box.tx_count++; box.uart->write_array(frame,5);
+  if (frame[2] != 0) box.last_nonidle_tx=now;
 }
 
 void JSDrive2::send_both_(const uint8_t frame[5], bool action) {
@@ -85,7 +90,93 @@ void JSDrive2::send_both_(const uint8_t frame[5], bool action) {
 }
 
 bool JSDrive2::box_ready_(const Box &box, uint32_t now) const {
-  return box.seen && box.awake && now-box.last_frame<=LINK_MS;
+  return box.seen && box.awake && box.wake==WakeState::IDLE && now-box.last_frame<=LINK_MS;
+}
+
+bool JSDrive2::fresh_height_(const Box &box, uint32_t now) const {
+  return box_ready_(box,now) && !std::isnan(box.live_height) && now-box.last_height<=LIVE_MS;
+}
+
+bool JSDrive2::wake_ready_() const {
+  return box_a_.wake==WakeState::IDLE && box_b_.wake==WakeState::IDLE;
+}
+
+void JSDrive2::start_wake_(Box &box) {
+  if (box.wake!=WakeState::IDLE || box.action_pin==nullptr || box.uart==nullptr) return;
+  box.wake=WakeState::ASSERT; box.wake_started=millis();
+  set_box_action_(box,true);
+  ESP_LOGI(TAG,"Wake %s: pin 5 asserted",box.name);
+}
+
+void JSDrive2::poll_wake_(Box &box, uint32_t now) {
+  if (box.wake==WakeState::ASSERT && now-box.wake_started>=10) {
+    send_box_(box,CMD_UP); box.wake=WakeState::HOLD;
+  }
+  if (box.wake==WakeState::HOLD && now-box.wake_started>=21) {
+    set_box_action_(box,false); send_box_(box,CMD_IDLE);
+    box.wake=WakeState::WAIT_HEIGHT;
+  }
+  if (box.wake==WakeState::WAIT_HEIGHT) {
+    if (box.awake && box.seen && !std::isnan(box.live_height) &&
+        box.last_height>=box.wake_started && now-box.last_height<=LIVE_MS) {
+      box.wake=WakeState::IDLE;
+      ESP_LOGI(TAG,"Wake %s verified at %.1f",box.name,box.live_height);
+    } else if (now-box.wake_started>1000) {
+      box.wake=WakeState::FAILED;
+      ESP_LOGW(TAG,"Wake %s failed: no fresh height",box.name);
+    }
+  }
+}
+
+void JSDrive2::poll_automatic_wake_(uint32_t now) {
+  for (Box *box : {&box_a_,&box_b_}) {
+    if (box->awake) { box->sleep_low_since=0; box->wake_attempted=false; }
+    else if (box->sleep_low_since==0) box->sleep_low_since=now;
+  }
+  if (!armed_ || motion_!=MotionState::IDLE || align_!=AlignState::IDLE ||
+      remote_button_down_ || remote_action_ ||
+      (last_auto_wake_!=0 && now-last_auto_wake_<WAKE_RETRY_MS)) return;
+  bool any=false;
+  for (Box *box : {&box_a_,&box_b_}) {
+    if (box->wake==WakeState::FAILED) box->wake=WakeState::IDLE;
+    if (box->wake==WakeState::IDLE && !box->awake && !box->wake_attempted &&
+        box->sleep_low_since!=0 && now-box->sleep_low_since>=SLEEP_STABLE_MS &&
+        (!box->seen || now-box->last_frame>LINK_MS)) {
+      box->wake_attempted=true; start_wake_(*box); any=true;
+    }
+  }
+  if (any) last_auto_wake_=now;
+}
+
+void JSDrive2::poll_box_idle_(Box &box, uint32_t now) {
+  if (box.wake==WakeState::ASSERT || box.wake==WakeState::HOLD) return;
+  if (box.action && now-box.last_nonidle_tx<20) return;
+  if (now-box.last_tx>=STREAM_MS) send_box_(box,CMD_IDLE);
+}
+
+void JSDrive2::poll_action_watchdog_(uint32_t now) {
+  for (Box *box : {&box_a_,&box_b_}) {
+    if (!box->action) continue;
+    const bool wake_pulse=(box->wake==WakeState::ASSERT || box->wake==WakeState::HOLD) &&
+                          now-box->wake_started<=25;
+    const bool align_pulse=align_==AlignState::PULSE && now-align_started_<=55;
+    const bool handset=armed_ && remote_action_ && remote_button_down_ &&
+                       now-remote_last_frame_<=ACTION_WATCHDOG_MS &&
+                       now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
+    const bool bridge=armed_ && motion_!=MotionState::IDLE &&
+                      motion_!=MotionState::DISCOVER_WAIT &&
+                      now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
+    if (!box->awake && !wake_pulse) {
+      set_box_action_(*box,false);
+      fail_("box slept while action output was high");
+      return;
+    }
+    if (!(wake_pulse || align_pulse || handset || bridge)) {
+      set_box_action_(*box,false);
+      if (motion_!=MotionState::IDLE) fail_("action watchdog expired");
+      else ESP_LOGW(TAG,"Action watchdog released box %s",box->name);
+    }
+  }
 }
 bool JSDrive2::trusted_equal_() const {
   return !std::isnan(box_a_.last_good) && !std::isnan(box_b_.last_good) && tenths(box_a_.last_good)==tenths(box_b_.last_good);
@@ -111,44 +202,119 @@ const uint8_t *JSDrive2::command_frame_(uint8_t command) const {
 }
 
 void JSDrive2::set_handset_buttons_(uint8_t command) {
-  if (up_sensor_) up_sensor_->publish_state(command==0x20);
-  if (down_sensor_) down_sensor_->publish_state(command==0x40);
-  if (memory1_sensor_) memory1_sensor_->publish_state(command==0x02);
-  if (memory2_sensor_) memory2_sensor_->publish_state(command==0x04);
-  if (memory3_sensor_) memory3_sensor_->publish_state(command==0x08);
-  if (memory4_sensor_) memory4_sensor_->publish_state(command==0x10);
+  if (up_sensor_) up_sensor_->publish_state(command&0x20);
+  if (down_sensor_) down_sensor_->publish_state(command&0x40);
+  if (memory1_sensor_) memory1_sensor_->publish_state(command&0x02);
+  if (memory2_sensor_) memory2_sensor_->publish_state(command&0x04);
+  if (memory3_sensor_) memory3_sensor_->publish_state(command&0x08);
+  if (memory4_sensor_) memory4_sensor_->publish_state(command&0x10);
 }
 
 void JSDrive2::handle_remote_(const uint8_t f[5]) {
   uint32_t now=millis(); uint8_t command=f[2];
   remote_seen_=true; remote_last_frame_=now; set_handset_buttons_(command);
   bool physical=remote_action_pin_ != nullptr && remote_action_pin_->digital_read();
-  if (command!=0 && command!=remote_command_ && physical && motion_!=MotionState::IDLE) stop("handset took control");
   remote_action_=physical;
   if (command==0) {
     if (remote_button_down_) { set_actions_(false,false); send_both_(CMD_IDLE,false); }
-    remote_button_down_=false; remote_command_=0; return;
-  }
-  if (!physical) return;
-  bool memory=command==0x01 || (command>=0x02 && command<=0x10 && (command&(command-1))==0);
-  if (!movement_ready_(memory)) {
-    set_actions_(false,false);
-    if ((command==0x20 || command==0x40) && command!=remote_command_ && trusted_equal_() &&
-        box_ready_(box_a_,now) && box_ready_(box_b_,now)) {
-      // A deep-sleep handset press wakes but does not move the original desk.
-      // Reproduce the captured handshake; the next press can move after both
-      // boxes report matching live heights.
-      discover_height();
-      remote_command_=command;
-      remote_button_down_=true;
-    }
-    if (command!=remote_command_) ESP_LOGW(TAG,"Handset command 0x%02X blocked: boxes are not ready and synchronized",command);
+    remote_button_down_=false; remote_command_=0;
+    remote_wake_consumed_=false;
+    recovery_started_=0; recovery_attempted_=false;
     return;
   }
-  if ((command==0x02 || command==0x04 || command==0x08 || command==0x10) && command!=remote_command_) {
-    motion_=MotionState::PRESET; motion_started_=now; phase_started_=now; preset_motion_seen_=false;
-    active_preset_=(command==0x02?1:command==0x04?2:command==0x08?3:4);
+  if (!physical) {
+    if (remote_button_down_) set_actions_(false,false);
+    remote_button_down_=false;
+    remote_wake_consumed_=false;
+    return;
   }
+  const bool changed=command!=remote_command_;
+  if ((command & (command-1)) != 0) {
+    if (motion_==MotionState::COARSE || motion_==MotionState::FINE_PULSE ||
+        motion_==MotionState::FINE_SETTLE || motion_==MotionState::DISCOVER_WAIT)
+      stop("simultaneous handset buttons took control");
+    set_actions_(false,false); send_both_(CMD_IDLE,false);
+    remote_button_down_=true; remote_command_=command;
+    if (command==0x60 && !armed_) {
+      if (recovery_started_==0) recovery_started_=now;
+      if (!recovery_attempted_ && now-recovery_started_>=500) {
+        recovery_attempted_=true; recover_();
+      }
+    } else { recovery_started_=0; recovery_attempted_=false; }
+    return;
+  }
+  recovery_started_=0; recovery_attempted_=false;
+  const bool preset=command==0x02 || command==0x04 || command==0x08 || command==0x10;
+  const bool memory=command==0x01 || preset;
+  const bool manual=command==0x20 || command==0x40;
+  if (manual && remote_wake_consumed_) {
+    for (Box *box : {&box_a_,&box_b_})
+      if (box->wake!=WakeState::ASSERT && box->wake!=WakeState::HOLD)
+        set_box_action_(*box,false);
+    remote_button_down_=true; remote_command_=command;
+    return;
+  }
+  if (changed && motion_!=MotionState::IDLE && motion_!=MotionState::PRESET &&
+      motion_!=MotionState::SAVE_M && motion_!=MotionState::SAVE_SLOT) {
+    stop("handset took control");
+  }
+  if (align_!=AlignState::IDLE) {
+    if (fresh_height_(box_a_,now) && fresh_height_(box_b_,now) &&
+        abs(tenths(box_a_.live_height)-tenths(box_b_.live_height))<=1) {
+      align_=AlignState::IDLE; set_actions_(false,false);
+    } else {
+      set_actions_(false,false); remote_button_down_=true; remote_command_=command;
+      return;
+    }
+  }
+  if (motion_==MotionState::PRESET && changed && command==0x01) {
+    stop("M canceled preset travel");
+    remote_button_down_=true; remote_command_=command;
+    return;
+  }
+  if (motion_==MotionState::PRESET && changed && preset) {
+    if (fresh_height_(box_a_,now) && fresh_height_(box_b_,now) &&
+        abs(tenths(box_a_.live_height)-tenths(box_b_.live_height))<tenths(hard_skew_)) {
+      clear_preset_(); motion_=MotionState::IDLE;
+    } else {
+      set_actions_(false,false); remote_button_down_=true; remote_command_=command;
+      return;
+    }
+  }
+  const bool manual_ready=manual && armed_ && fresh_height_(box_a_,now) &&
+      fresh_height_(box_b_,now) &&
+      abs(tenths(box_a_.live_height)-tenths(box_b_.live_height))<tenths(hard_skew_) &&
+      ((box_a_.action && box_b_.action) ||
+       abs(tenths(box_a_.live_height)-tenths(box_b_.live_height))<=1);
+  const bool ready=movement_ready_(memory) || manual_ready ||
+      (motion_==MotionState::PRESET && manual &&
+       fresh_height_(box_a_,now) && fresh_height_(box_b_,now) &&
+       abs(tenths(box_a_.live_height)-tenths(box_b_.live_height))<tenths(hard_skew_));
+  if (!ready) {
+    if (manual) remote_wake_consumed_=true;
+    // Do not cancel a bounded wake pulse when the handset repeats its held
+    // button frame. The other box must remain low until both are ready.
+    for (Box *box : {&box_a_,&box_b_})
+      if (box->wake!=WakeState::ASSERT && box->wake!=WakeState::HOLD)
+        set_box_action_(*box,false);
+    if (manual && changed && armed_) {
+      for (Box *box : {&box_a_,&box_b_}) {
+        if (box->wake==WakeState::FAILED) box->wake=WakeState::IDLE;
+        if (box->wake==WakeState::IDLE &&
+            (!box->awake || box->display==DisplayState::BLANK || !fresh_height_(*box,now)))
+          start_wake_(*box);
+      }
+    }
+    if (changed) {
+      ESP_LOGW(TAG,"Handset command 0x%02X waiting for synchronized heights",command);
+      if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now)) {
+        sos_=true; sos_until_=now+3000; error_="SOS: box link unavailable";
+      }
+    }
+    remote_button_down_=true; remote_command_=command;
+    return;
+  }
+  if (preset && changed) start_preset_(command==0x02?1:command==0x04?2:command==0x08?3:4,true);
   send_both_(f,true); remote_button_down_=true; remote_command_=command;
 }
 
@@ -168,23 +334,166 @@ void JSDrive2::handle_box_(Box &box, const uint8_t f[5]) {
   uint32_t now=millis(); float h=decode_height(f); DisplayState prior=box.display;
   box.seen=true; box.last_frame=now; box.glyph={{f[1],f[2],f[3]}};
   if (!std::isnan(h)) {
-    box.display=DisplayState::HEIGHT; box.live_height=h; box.last_height=now;
-    if (std::isnan(box.last_good) || tenths(box.last_good)!=tenths(h)) box.last_change=now;
-    box.last_good=h;
+    box.display=DisplayState::HEIGHT;
+    if (motion_==MotionState::PRESET) handle_preset_height_(box,h,now);
+    else {
+      box.live_height=h; box.last_height=now;
+      if (std::isnan(box.last_good) || tenths(box.last_good)!=tenths(h)) box.last_change=now;
+      box.last_good=h;
+    }
   } else if (f[1]==0 && f[2]==0 && f[3]==0) {
-    box.display=DisplayState::BLANK; box.live_height=NAN;
+    box.display=DisplayState::BLANK; if (motion_!=MotionState::PRESET) box.live_height=NAN;
+    if (preset_phase_==PresetPhase::WAIT_MOTION &&
+        box_a_.display==DisplayState::BLANK && box_b_.display==DisplayState::BLANK)
+      preset_announcement_visible_=false;
   } else if (f[1]==0x6D && (f[2]==0x40 || f[2]==0) && f[3]==0) {
-    box.display=DisplayState::MEMORY; box.live_height=NAN;
+    box.display=DisplayState::MEMORY; if (motion_!=MotionState::PRESET) box.live_height=NAN;
   } else {
     // E04 is E,0,4. Keep unknown glyphs visible rather than discarding them.
     box.display=(digit(f[2])==0 && digit(f[3])==4) ? DisplayState::ERROR : DisplayState::OTHER;
-    box.live_height=NAN;
+    if (motion_!=MotionState::PRESET) box.live_height=NAN;
     if (box.display==DisplayState::ERROR) error_="E04";
   }
   if (prior!=box.display || !std::isnan(h)) ESP_LOGD(TAG,"Box %s: %s",box.name,display_text_(box).c_str());
+  if (box.display==DisplayState::ERROR &&
+      (motion_!=MotionState::IDLE || box_a_.action || box_b_.action)) {
+    fail_("control box reported E04"); return;
+  }
   update_confirmed_();
-  if (motion_!=MotionState::IDLE && !std::isnan(box_a_.live_height) && !std::isnan(box_b_.live_height) &&
+  if ((motion_!=MotionState::IDLE || box_a_.action || box_b_.action) &&
+      motion_!=MotionState::PRESET && wake_ready_() &&
+      !std::isnan(box_a_.live_height) && !std::isnan(box_b_.live_height) &&
       fabsf(box_a_.live_height-box_b_.live_height)+0.001f>=hard_skew_) fail_("box height difference reached hard limit");
+}
+
+void JSDrive2::start_preset_(uint8_t preset, bool from_handset) {
+  const uint32_t now=millis();
+  active_preset_=preset; preset_from_handset_=from_handset;
+  preset_phase_=PresetPhase::ANNOUNCEMENT; preset_motion_seen_=false;
+  preset_start_=trusted_equal_()?box_a_.last_good:NAN;
+  preset_target_=NAN; preset_raw_a_=box_a_.last_good; preset_raw_b_=box_b_.last_good;
+  preset_announcement_visible_=false;
+  preset_queue_a_.count=0; preset_queue_b_.count=0; preset_pair_wait_=0;
+  preset_last_change_=now; preset_first_motion_=0;
+  motion_=MotionState::PRESET; motion_started_=phase_started_=now;
+}
+
+void JSDrive2::clear_preset_() {
+  preset_phase_=PresetPhase::IDLE; preset_queue_a_.count=0; preset_queue_b_.count=0;
+  preset_pair_wait_=0; preset_target_=NAN; preset_from_handset_=false;
+  preset_announcement_visible_=false;
+}
+
+void JSDrive2::commit_preset_pair_(float height, uint32_t now) {
+  if (preset_phase_==PresetPhase::ANNOUNCEMENT &&
+      !std::isnan(preset_start_) && tenths(height)!=tenths(preset_start_)) {
+    preset_target_=height; preset_phase_=PresetPhase::WAIT_MOTION;
+    preset_announcement_visible_=true;
+    ESP_LOGI(TAG,"Preset %u destination %.1f matched by both boxes",active_preset_,height);
+    return;
+  }
+  if (preset_phase_==PresetPhase::WAIT_MOTION && !std::isnan(preset_target_) &&
+      tenths(height)==tenths(preset_target_)) {
+    preset_announcement_visible_=true; return;
+  }
+  if (preset_phase_==PresetPhase::WAIT_MOTION && !std::isnan(preset_start_) &&
+      tenths(height)==tenths(preset_start_)) {
+    preset_announcement_visible_=false; return;
+  }
+  if (preset_phase_==PresetPhase::ANNOUNCEMENT) return;
+  for (Box *box : {&box_a_,&box_b_}) {
+    if (std::isnan(box->last_good) || tenths(box->last_good)!=tenths(height)) box->last_change=now;
+    box->live_height=height; box->last_height=now; box->last_good=height;
+  }
+  preset_phase_=PresetPhase::MOVING; preset_motion_seen_=true;
+  preset_announcement_visible_=false;
+  if (preset_first_motion_==0) preset_first_motion_=now;
+  preset_last_change_=now;
+  update_confirmed_();
+}
+
+void JSDrive2::handle_preset_height_(Box &box, float height, uint32_t now) {
+  float &raw=(&box==&box_a_)?preset_raw_a_:preset_raw_b_;
+  HeightQueue &queue=(&box==&box_a_)?preset_queue_a_:preset_queue_b_;
+  if (!std::isnan(raw) && tenths(raw)==tenths(height)) return;
+  raw=height;
+  if (preset_phase_==PresetPhase::MOVING && !std::isnan(preset_raw_a_) &&
+      !std::isnan(preset_raw_b_) &&
+      abs(tenths(preset_raw_a_)-tenths(preset_raw_b_))>=tenths(hard_skew_)) {
+    fail_("preset physical heights exceeded hard skew"); return;
+  }
+  if (queue.count==HeightQueue::CAPACITY) {
+    for (uint8_t i=1;i<queue.count;i++) { queue.values[i-1]=queue.values[i]; queue.times[i-1]=queue.times[i]; }
+    queue.count--;
+  }
+  queue.values[queue.count]=height; queue.times[queue.count]=now; queue.count++;
+  while (preset_queue_a_.count && preset_queue_b_.count) {
+    int match_a=-1, match_b=-1, best=2*HeightQueue::CAPACITY+1;
+    for (uint8_t a=0;a<preset_queue_a_.count;a++) for (uint8_t b=0;b<preset_queue_b_.count;b++) {
+      if (tenths(preset_queue_a_.values[a])==tenths(preset_queue_b_.values[b]) && a+b<best) {
+        match_a=a; match_b=b; best=a+b;
+      }
+    }
+    if (match_a<0) break;
+    const float matched=preset_queue_a_.values[match_a];
+    const uint32_t matched_at=std::max(preset_queue_a_.times[match_a],preset_queue_b_.times[match_b]);
+    const uint8_t used_a=match_a+1, used_b=match_b+1;
+    for (uint8_t i=used_a;i<preset_queue_a_.count;i++) {
+      preset_queue_a_.values[i-used_a]=preset_queue_a_.values[i];
+      preset_queue_a_.times[i-used_a]=preset_queue_a_.times[i];
+    }
+    for (uint8_t i=used_b;i<preset_queue_b_.count;i++) {
+      preset_queue_b_.values[i-used_b]=preset_queue_b_.values[i];
+      preset_queue_b_.times[i-used_b]=preset_queue_b_.times[i];
+    }
+    preset_queue_a_.count-=used_a; preset_queue_b_.count-=used_b;
+    commit_preset_pair_(matched,matched_at);
+    if (motion_!=MotionState::PRESET) return;
+  }
+  if (preset_queue_a_.count && preset_queue_b_.count)
+    preset_pair_wait_=std::min(preset_queue_a_.times[0],preset_queue_b_.times[0]);
+  else if (preset_queue_a_.count) preset_pair_wait_=preset_queue_a_.times[0];
+  else if (preset_queue_b_.count) preset_pair_wait_=preset_queue_b_.times[0];
+  else preset_pair_wait_=0;
+}
+
+void JSDrive2::poll_preset_(uint32_t now) {
+  if (preset_from_handset_ && (!remote_seen_ || now-remote_last_frame_>LINK_MS)) {
+    fail_("handset link lost during preset travel"); return;
+  }
+  if (box_a_.action || box_b_.action) {
+    if (!preset_from_handset_) {
+      if (now-phase_started_<190 && now-last_command_tx_>=STREAM_MS)
+        send_both_(CMD_PRESET[active_preset_-1],true);
+      else { set_actions_(false,false); send_both_(CMD_IDLE,false); }
+    }
+  }
+  if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now)) {
+    fail_("box link or awake input lost during preset travel"); return;
+  }
+  if (preset_motion_seen_ && now-preset_last_change_>=1200 && !remote_action_) {
+    // A box can skip the final tenth. Preserve each physical report for the
+    // bounded post-stop alignment rather than treating the queue as a fault.
+    if (!std::isnan(preset_raw_a_) && !std::isnan(preset_raw_b_)) {
+      if (std::isnan(box_a_.last_good) || tenths(box_a_.last_good)!=tenths(preset_raw_a_)) box_a_.last_change=now;
+      if (std::isnan(box_b_.last_good) || tenths(box_b_.last_good)!=tenths(preset_raw_b_)) box_b_.last_change=now;
+      box_a_.last_good=preset_raw_a_; box_b_.last_good=preset_raw_b_;
+      box_a_.live_height=preset_raw_a_; box_b_.live_height=preset_raw_b_;
+      box_a_.last_height=now; box_b_.last_height=now;
+      update_confirmed_();
+    }
+    clear_preset_(); motion_=MotionState::IDLE;
+    set_actions_(false,false); return;
+  }
+  if (!preset_motion_seen_ && now-motion_started_>5000) {
+    clear_preset_(); finish_motion_("preset completed without travel"); return;
+  }
+  if (preset_pair_wait_ && now-preset_pair_wait_>PRESET_PAIR_MS && !preset_motion_seen_) {
+    fail_("preset announcement heights did not match"); return;
+  }
+  // During physical travel a box can skip an intermediate or final tenth.
+  // The raw 0.5 split and link watchdogs protect motion; unmatched display
+  // tenths are resolved by the final settlement and alignment path.
 }
 
 void JSDrive2::update_confirmed_() {
@@ -204,8 +513,13 @@ void JSDrive2::send_remote_status_() {
   if (sos_ && now<sos_until_) { f[1]=0x6D; f[2]=0x3F; f[3]=0x6D; }
   else if (box_a_.display==DisplayState::MEMORY && box_b_.display==DisplayState::MEMORY) {
     f[1]=0x6D; f[2]=((now/500)&1)?0:0x40;
-  } else if (!std::isnan(confirmed_height_)) {
-    int n=tenths(confirmed_height_), whole=n/10;
+  } else if (remote_seen_ && !std::isnan(confirmed_height_) &&
+             !(motion_==MotionState::IDLE && align_==AlignState::IDLE &&
+               box_a_.display==DisplayState::BLANK && box_b_.display==DisplayState::BLANK)) {
+    const float shown=(preset_phase_==PresetPhase::WAIT_MOTION &&
+                       preset_announcement_visible_ && !std::isnan(preset_target_))
+                          ? preset_target_ : confirmed_height_;
+    int n=tenths(shown), whole=n/10;
     f[1]=SEG[(whole/10)%10]; f[2]=SEG[whole%10]|0x80; f[3]=SEG[n%10];
   }
   f[4]=(uint8_t)(f[1]+f[2]+f[3]);
@@ -215,7 +529,10 @@ void JSDrive2::send_remote_status_() {
 
 void JSDrive2::fail_(const std::string &reason, bool disarm, bool show_sos) {
   set_actions_(false,false); send_box_(box_a_,CMD_IDLE); send_box_(box_b_,CMD_IDLE);
-  motion_=MotionState::IDLE; target_height_=NAN; direction_=0;
+  for (Box *box : {&box_a_,&box_b_})
+    if (box->wake==WakeState::ASSERT || box->wake==WakeState::HOLD) box->wake=WakeState::FAILED;
+  motion_=MotionState::IDLE; align_=AlignState::IDLE; clear_preset_();
+  target_height_=NAN; direction_=0;
   fault_=reason; if (disarm) armed_=false;
   if (show_sos) { sos_=true; sos_until_=millis()+3000; error_="SOS: "+reason; }
   ESP_LOGE(TAG,"Stopped: %s%s",reason.c_str(),disarm?"; bridge disarmed":""); publish_();
@@ -223,23 +540,35 @@ void JSDrive2::fail_(const std::string &reason, bool disarm, bool show_sos) {
 
 void JSDrive2::finish_motion_(const char *reason) {
   set_actions_(false,false); send_box_(box_a_,CMD_IDLE); send_box_(box_b_,CMD_IDLE);
-  motion_=MotionState::IDLE; target_height_=NAN; direction_=0; fine_taps_=0;
+  motion_=MotionState::IDLE; clear_preset_();
+  target_height_=NAN; direction_=0; fine_taps_=0;
   ESP_LOGI(TAG,"%s",reason); update_confirmed_(); publish_();
 }
 
 bool JSDrive2::discover_height() {
-  if (motion_!=MotionState::IDLE || remote_button_down_) return false;
-  motion_=MotionState::DISCOVER_ASSERT; motion_started_=phase_started_=millis(); set_actions_(true,true);
-  ESP_LOGI(TAG,"Starting captured wake discovery handshake"); return true;
+  if (!armed_ || motion_!=MotionState::IDLE || remote_button_down_ || align_!=AlignState::IDLE) return false;
+  const uint32_t now=millis();
+  if (fresh_height_(box_a_,now) && fresh_height_(box_b_,now) && trusted_equal_()) return true;
+  motion_=MotionState::DISCOVER_WAIT; motion_started_=phase_started_=now;
+  for (Box *box : {&box_a_,&box_b_}) {
+    if (box->wake==WakeState::FAILED) box->wake=WakeState::IDLE;
+    if (!fresh_height_(*box,now)) start_wake_(*box);
+  }
+  ESP_LOGI(TAG,"Discovering each box height with its own wake session"); return true;
 }
 
 bool JSDrive2::request_height(float height) {
   height=roundf(height*10.0f)/10.0f;
   if (height<min_height_ || height>max_height_) { fault_="target outside configured range"; publish_(); return false; }
-  if (motion_!=MotionState::IDLE || remote_button_down_) return false;
+  if (!armed_ || motion_!=MotionState::IDLE || remote_button_down_ || align_!=AlignState::IDLE) return false;
   target_height_=height; fine_taps_=0; motion_started_=millis();
   if (!movement_ready_(true) || !live_equal_()) {
-    motion_=MotionState::DISCOVER_ASSERT; phase_started_=millis(); set_actions_(true,true);
+    const uint32_t now=millis();
+    motion_=MotionState::DISCOVER_WAIT; phase_started_=now;
+    for (Box *box : {&box_a_,&box_b_}) {
+      if (box->wake==WakeState::FAILED) box->wake=WakeState::IDLE;
+      if (!fresh_height_(*box,now)) start_wake_(*box);
+    }
     ESP_LOGI(TAG,"Target %.1f requested; discovering height first",height); return true;
   }
   int current=tenths(confirmed_height_), target=tenths(height);
@@ -250,7 +579,7 @@ bool JSDrive2::request_height(float height) {
 
 bool JSDrive2::recall_preset(uint8_t preset) {
   if (preset<1 || preset>4 || motion_!=MotionState::IDLE || !movement_ready_(true)) return false;
-  active_preset_=preset; preset_motion_seen_=false; motion_=MotionState::PRESET; motion_started_=phase_started_=millis();
+  start_preset_(preset,false);
   send_both_(CMD_PRESET[preset-1],true); ESP_LOGI(TAG,"Recall preset %u",preset); return true;
 }
 
@@ -264,6 +593,23 @@ void JSDrive2::stop(const char *reason) { fail_(reason,false,false); }
 void JSDrive2::arm() { armed_=true; fault_="none"; publish_(); }
 void JSDrive2::disarm() { stop("disarmed"); armed_=false; publish_(); }
 
+bool JSDrive2::recover_() {
+  const uint32_t now=millis();
+  if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now) ||
+      std::isnan(box_a_.last_good) || std::isnan(box_b_.last_good) ||
+      now-box_a_.last_change<800 || now-box_b_.last_change<800 ||
+      motion_!=MotionState::IDLE || align_!=AlignState::IDLE || !wake_ready_() ||
+      abs(tenths(box_a_.last_good)-tenths(box_b_.last_good))>=tenths(hard_skew_)) {
+    ESP_LOGW(TAG,"Recovery chord waiting for healthy, stopped boxes");
+    return false;
+  }
+  set_actions_(false,false); sos_=false; sos_until_=0;
+  armed_=true; fault_="none";
+  ESP_LOGI(TAG,"Recovered by held UP+DOWN; boxes %.1f and %.1f",
+           box_a_.last_good,box_b_.last_good);
+  publish_(); return true;
+}
+
 void JSDrive2::start_command_(uint8_t command, bool from_remote) {
   (void) from_remote; const uint8_t *f=command_frame_(command); send_both_(f,command!=0);
 }
@@ -272,52 +618,41 @@ void JSDrive2::poll_motion_() {
   if (motion_==MotionState::IDLE) return;
   uint32_t now=millis();
   if (now-motion_started_>TARGET_TIMEOUT_MS) { fail_("45 second transaction timeout"); return; }
-  if (motion_==MotionState::DISCOVER_ASSERT) {
-    if (now-phase_started_>=10) { send_box_(box_a_,CMD_UP); send_box_(box_b_,CMD_UP); motion_=MotionState::DISCOVER_WAIT; phase_started_=now; }
-    return;
-  }
   if (motion_==MotionState::DISCOVER_WAIT) {
-    if (now-phase_started_>=10 && (box_a_.action || box_b_.action)) { set_actions_(false,false); send_box_(box_a_,CMD_IDLE); send_box_(box_b_,CMD_IDLE); }
-    if (movement_ready_(false)) {
+    if (movement_ready_(false) && align_==AlignState::IDLE) {
       if (std::isnan(target_height_)) { finish_motion_("height discovery complete"); return; }
       int cur=tenths(confirmed_height_), target=tenths(target_height_);
       if (cur==target) { finish_motion_("already at requested height"); return; }
       direction_=target>cur?1:-1; motion_=MotionState::COARSE; phase_started_=now;
-    } else if (now-phase_started_>3000) fail_("height discovery did not return matching box heights");
+    } else if (now-phase_started_>3000 && align_==AlignState::IDLE)
+      fail_("height discovery did not return synchronized box heights");
     return;
   }
   if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now)) { fail_("box link or awake input lost"); return; }
 
   if (motion_==MotionState::SAVE_M) {
-    if (now-phase_started_>=190) { set_actions_(false,false); send_both_(CMD_IDLE,false); motion_=MotionState::SAVE_SLOT; phase_started_=now; }
+    if (now-phase_started_>=190) {
+      set_actions_(false,false); send_both_(CMD_IDLE,false);
+      motion_=MotionState::SAVE_SLOT; phase_started_=now;
+    } else if (now-last_command_tx_>=STREAM_MS) send_both_(CMD_M,true);
     return;
   }
   if (motion_==MotionState::SAVE_SLOT) {
     if (box_a_.display==DisplayState::MEMORY && box_b_.display==DisplayState::MEMORY) {
-      send_both_(CMD_PRESET[save_preset_-1],true); motion_=MotionState::PRESET; active_preset_=save_preset_; phase_started_=now;
+      start_preset_(save_preset_,false); send_both_(CMD_PRESET[save_preset_-1],true);
       ESP_LOGI(TAG,"Both boxes accepted memory prompt; storing preset %u",save_preset_); return;
     }
     if (now-phase_started_>3000) fail_("both boxes did not enter memory prompt");
     return;
   }
   if (motion_==MotionState::PRESET) {
-    if (box_a_.action || box_b_.action) {
-      if (now-phase_started_>=190 && !remote_button_down_) { set_actions_(false,false); send_both_(CMD_IDLE,false); phase_started_=now; }
-    }
-    if (!std::isnan(box_a_.live_height) && !std::isnan(box_b_.live_height)) {
-      int delta=abs(tenths(box_a_.live_height)-tenths(box_b_.live_height));
-      if (delta>=tenths(hard_skew_)) { fail_("preset height pair exceeded hard skew"); return; }
-      if (delta==0) { preset_motion_seen_=true; update_confirmed_(); phase_started_=now; }
-    }
-    if (preset_motion_seen_ && !std::isnan(box_a_.live_height) && !std::isnan(box_b_.live_height) &&
-        now-box_a_.last_change>700 && now-box_b_.last_change>700) finish_motion_("preset settled");
-    else if (!preset_motion_seen_ && now-motion_started_>5000) finish_motion_("preset completed without travel");
+    poll_preset_(now);
     return;
   }
 
   if (std::isnan(box_a_.live_height) || std::isnan(box_b_.live_height) || now-box_a_.last_height>LIVE_MS || now-box_b_.last_height>LIVE_MS) {
     // During settling a blank display is expected; retain last-good positions.
-    if (motion_!=MotionState::FINE_SETTLE || now-phase_started_>2000) { fail_("fresh height missing"); return; }
+    if (motion_!=MotionState::FINE_SETTLE || now-phase_started_>4000) { fail_("fresh height missing"); return; }
   }
   int a=tenths(box_a_.last_good), b=tenths(box_b_.last_good), target=tenths(target_height_);
   if (abs(a-b)>=tenths(hard_skew_)) { fail_("live box height difference reached hard limit"); return; }
@@ -343,18 +678,48 @@ void JSDrive2::poll_motion_() {
 }
 
 void JSDrive2::poll_alignment_() {
-  if (motion_!=MotionState::IDLE || remote_button_down_ || !armed_) return;
   uint32_t now=millis();
-  if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now) || std::isnan(box_a_.last_good) || std::isnan(box_b_.last_good)) return;
+  if (!armed_) {
+    if (align_!=AlignState::IDLE) { set_actions_(false,false); align_=AlignState::IDLE; }
+    return;
+  }
+  if (align_==AlignState::PULSE) {
+    Box &higher=align_high_box_==0?box_a_:box_b_;
+    if (!box_a_.awake || !box_b_.awake) { fail_("box slept during correction pulse"); return; }
+    if (remote_action_ || remote_button_down_ || now-align_started_>=align_duration_) {
+      set_box_action_(higher,false); send_box_(higher,CMD_IDLE);
+      align_=AlignState::SETTLE; align_started_=now;
+    } else if (now-higher.last_nonidle_tx>=STREAM_MS) send_box_(higher,CMD_DOWN);
+    return;
+  }
+  if (!(motion_==MotionState::IDLE || motion_==MotionState::DISCOVER_WAIT ||
+        motion_==MotionState::FINE_SETTLE) || remote_button_down_ || remote_action_) return;
+  if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now) ||
+      std::isnan(box_a_.last_good) || std::isnan(box_b_.last_good)) {
+    if (align_==AlignState::SETTLE && now-align_started_>2000)
+      fail_("box link lost after correction pulse");
+    return;
+  }
+  if (align_==AlignState::SETTLE && now-align_started_<800) return;
   int d=tenths(box_a_.last_good)-tenths(box_b_.last_good);
-  if (d==0) { align_attempts_=0; return; }
+  if (d==0) {
+    if (align_!=AlignState::IDLE) ESP_LOGI(TAG,"Boxes aligned at %.1f",box_a_.last_good);
+    align_=AlignState::IDLE; align_attempts_=0; align_high_box_=0xFF;
+    update_confirmed_(); return;
+  }
   if (abs(d)>=tenths(hard_skew_)) { fail_("stopped boxes exceed hard skew"); return; }
-  if (now-box_a_.last_change<800 || now-box_b_.last_change<800) return;
+  if (now-box_a_.last_change<400 || now-box_b_.last_change<400) return;
+  const uint8_t high=d>0?0:1;
+  if (align_high_box_!=0xFF && align_high_box_!=high) {
+    fail_("correction crossed past the lower box"); return;
+  }
   if (align_attempts_>=3) { fail_("three alignment pulses did not synchronize boxes"); return; }
-  Box &higher=d>0?box_a_:box_b_; uint32_t duration=align_attempts_==0?20:align_attempts_==1?35:50;
-  higher.action_pin->digital_write(true); higher.action=true; send_box_(higher,CMD_DOWN);
-  motion_=MotionState::ALIGN_PULSE; motion_started_=phase_started_=now; target_height_=duration; align_attempts_++;
-  ESP_LOGW(TAG,"Aligning box %s down for %u ms",higher.name,(unsigned)duration);
+  Box &higher=high==0?box_a_:box_b_;
+  align_duration_=align_attempts_==0?20:align_attempts_==1?35:50;
+  align_high_box_=high; align_attempts_++;
+  align_=AlignState::PULSE; align_started_=now;
+  set_box_action_(higher,true); send_box_(higher,CMD_DOWN);
+  ESP_LOGW(TAG,"Aligning box %s down for %u ms",higher.name,(unsigned)align_duration_);
 }
 
 void JSDrive2::publish_() {
@@ -380,7 +745,7 @@ void JSDrive2::publish_() {
   PB(box_a_connected_sensor_,ready_a); PB(box_b_connected_sensor_,ready_b); PB(box_a_awake_sensor_,box_a_.awake);
   PB(box_b_awake_sensor_,box_b_.awake); PB(armed_sensor_,armed_); PB(moving_sensor_,moving);
 #undef PB
-  const char *op=motion_==MotionState::IDLE?"idle":motion_==MotionState::COARSE?"target coarse":motion_==MotionState::FINE_PULSE?"target fine pulse":motion_==MotionState::FINE_SETTLE?"target settling":motion_==MotionState::PRESET?"preset":motion_==MotionState::SAVE_M||motion_==MotionState::SAVE_SLOT?"saving preset":motion_==MotionState::DISCOVER_ASSERT||motion_==MotionState::DISCOVER_WAIT?"discovering height":"aligning";
+  const char *op=align_!=AlignState::IDLE?"aligning":motion_==MotionState::IDLE?"idle":motion_==MotionState::COARSE?"target coarse":motion_==MotionState::FINE_PULSE?"target fine pulse":motion_==MotionState::FINE_SETTLE?"target settling":motion_==MotionState::PRESET?"preset":motion_==MotionState::SAVE_M||motion_==MotionState::SAVE_SLOT?"saving preset":"discovering height";
   if (operation_sensor_) operation_sensor_->publish_state(op);
   if (last_fault_sensor_) last_fault_sensor_->publish_state(fault_);
   if (box_a_display_sensor_) box_a_display_sensor_->publish_state(display_text_(box_a_));
@@ -396,19 +761,25 @@ void JSDrive2::loop() {
   uint32_t now=millis();
   box_a_.awake=box_a_.awake_pin!=nullptr && box_a_.awake_pin->digital_read();
   box_b_.awake=box_b_.awake_pin!=nullptr && box_b_.awake_pin->digital_read();
+  remote_action_=remote_action_pin_!=nullptr && remote_action_pin_->digital_read();
   if (remote_awake_pin_) remote_awake_pin_->digital_write(true);
+  poll_action_watchdog_(now);
   poll_uart_(remote_uart_,remote_parser_,true); poll_uart_(box_a_.uart,box_a_.parser,false,&box_a_); poll_uart_(box_b_.uart,box_b_.parser,false,&box_b_);
+  now=millis();
   if (box_a_.seen && now-box_a_.last_frame>LINK_MS) box_a_.seen=false;
   if (box_b_.seen && now-box_b_.last_frame>LINK_MS) box_b_.seen=false;
-  if (remote_seen_ && now-remote_last_frame_>LINK_MS) { remote_seen_=false; remote_button_down_=false; set_handset_buttons_(0); }
-  if (motion_==MotionState::ALIGN_PULSE) {
-    if (now-phase_started_>=(uint32_t)target_height_) { set_actions_(false,false); send_box_(box_a_,CMD_IDLE); send_box_(box_b_,CMD_IDLE); motion_=MotionState::ALIGN_SETTLE; phase_started_=now; }
-  } else if (motion_==MotionState::ALIGN_SETTLE) {
-    if (now-phase_started_>=800) { motion_=MotionState::IDLE; target_height_=NAN; }
-  } else poll_motion_();
+  if (remote_seen_ && now-remote_last_frame_>LINK_MS) {
+    remote_seen_=false; remote_button_down_=false; remote_wake_consumed_=false; remote_command_=0;
+    set_actions_(false,false); set_handset_buttons_(0);
+    if (motion_==MotionState::PRESET && preset_from_handset_)
+      fail_("handset link lost during preset travel");
+  }
+  poll_wake_(box_a_,now); poll_wake_(box_b_,now);
+  poll_automatic_wake_(now);
+  poll_motion_();
   poll_alignment_();
-  if (motion_==MotionState::IDLE && now-box_a_.last_tx>=STREAM_MS) send_box_(box_a_,CMD_IDLE);
-  if (motion_==MotionState::IDLE && now-box_b_.last_tx>=STREAM_MS) send_box_(box_b_,CMD_IDLE);
+  poll_action_watchdog_(millis());
+  poll_box_idle_(box_a_,now); poll_box_idle_(box_b_,now);
   if (now-remote_last_tx_>=STREAM_MS) send_remote_status_();
   if (now-last_publish_>=1000) { last_publish_=now; publish_(); }
 }
