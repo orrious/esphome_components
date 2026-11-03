@@ -3,7 +3,7 @@
 ## Goal
 
 Move the validated three-session bridge from `debug-firmware` into the
-`jsdrive` ESPHome external component without weakening its synchronization and
+`jsdrive2` ESPHome external component without weakening its synchronization and
 fail-safe behavior. The handset, Box A, and Box B remain independent protocol
 peers. The component synthesizes the state each peer needs; it never blindly
 relays one box's frames to another peer.
@@ -28,7 +28,8 @@ in `debug-firmware`:
   settling checks, and a 45-second timeout;
 - independent startup/wake discovery using the captured wake handshake, never
   M as a height query;
-- remote pin 8 HIGH only while both box pin-8 inputs are HIGH.
+- remote pin 8 HIGH from boot so the handset session remains independent of
+  both physical box sessions.
 
 All movement methods return a result/reason and converge through one command
 arbiter. No entity implementation writes UARTs or action GPIOs directly.
@@ -81,12 +82,12 @@ arbiter. No entity implementation writes UARTs or action GPIOs directly.
 
 Add generated ESPHome actions so YAML automations and the native API can call:
 
-- `jsdrive.set_height` with a templatable height;
-- `jsdrive.stop`;
-- `jsdrive.recall_preset` with preset 1–4;
-- `jsdrive.save_preset` with preset 1–4;
-- `jsdrive.arm` and `jsdrive.disarm` for diagnostics;
-- `jsdrive.discover_height` using the wake handshake.
+- `jsdrive2.set_height` with a templatable height;
+- `jsdrive2.stop`;
+- `jsdrive2.recall_preset` with preset 1–4;
+- `jsdrive2.save_preset` with preset 1–4;
+- `jsdrive2.arm` and `jsdrive2.disarm` for diagnostics;
+- `jsdrive2.discover_height` using the wake handshake.
 
 Buttons and the target-height number call these same actions. The component
 publishes failures through state and logs rather than silently ignoring them.
@@ -99,9 +100,9 @@ validated wiring:
 
 | Peer | ESP RX | ESP TX | Action | Awake |
 | --- | ---: | ---: | ---: | ---: |
-| Box A | GPIO4 | GPIO5 | GPIO9 | GPIO41 |
-| Box B | GPIO15 | GPIO16 | GPIO11 | GPIO40 |
-| Handset | GPIO2 | GPIO1 | GPIO39 input | GPIO48 output |
+| Box A | GPIO4 | GPIO5 | GPIO9 | GPIO42 |
+| Box B | GPIO15 | GPIO16 | GPIO11 | GPIO41 |
+| Handset | GPIO2 | GPIO1 | GPIO40 input | GPIO48 output |
 
 GPIO48 drives SN74AHCT125N pin 2 (`1A`), pin 1 (`1OE`) is grounded, and pin 3
 (`1Y`) drives handset pin 8.
