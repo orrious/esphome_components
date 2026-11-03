@@ -1,5 +1,8 @@
 # WP-CB01 dual-control-box ESPHome bridge
 
+Based on Samuel Sieb's [original `jsdrive` ESPHome component](https://github.com/ssieb/esphome_components/tree/jsdrive/components/jsdrive).
+See the [repository attribution](../../README.md) and [license](../../LICENSE).
+
 This external component makes an ESP32-S3 an active bridge between one
 WP-CB01 handset and two control boxes. Each UART is an independent protocol
 session. The bridge sends each peer synthesized state and never forwards one
