@@ -482,15 +482,6 @@ void JSDrive2::handle_preset_height_(Box &box, float height, uint32_t now) {
 }
 
 void JSDrive2::poll_preset_(uint32_t now) {
-  if (preset_phase_==PresetPhase::UART_LEAD) {
-    if (!live_equal_()) { fail_("preset lost fresh matching heights before command"); return; }
-    if (now-phase_started_>=10) {
-      preset_phase_=PresetPhase::ANNOUNCEMENT; phase_started_=now;
-      send_both_(CMD_PRESET[active_preset_-1],true);
-      ESP_LOGI(TAG,"Recall preset %u: pin 5 asserted after UART command",active_preset_);
-    }
-    return;
-  }
   if (preset_from_handset_ && (!remote_seen_ || now-remote_last_frame_>LINK_MS)) {
     fail_("handset link lost during preset travel"); return;
   }
@@ -676,9 +667,8 @@ void JSDrive2::poll_motion_() {
           !remote_action_) {
         const uint8_t preset=pending_preset_; pending_preset_=0;
         start_preset_(preset,false);
-        preset_phase_=PresetPhase::UART_LEAD; phase_started_=now;
-        send_both_(CMD_PRESET[preset-1],false);
-        ESP_LOGI(TAG,"Recall preset %u: UART command sent before pin 5",preset);
+        send_both_(CMD_PRESET[preset-1],true);
+        ESP_LOGI(TAG,"Recall preset %u: handset frame and pin 5 asserted together",preset);
       } else if (now-phase_started_>8000 && align_==AlignState::IDLE) {
         fail_("preset could not obtain settled synchronized heights");
       }

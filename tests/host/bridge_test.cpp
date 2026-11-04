@@ -21,8 +21,8 @@ struct ProbeBridge : JSDrive2 {
   bool preparing_preset(uint8_t n) const {
     return motion_==MotionState::DISCOVER_WAIT && pending_preset_==n;
   }
-  bool leading_preset(uint8_t n) const {
-    return motion_==MotionState::PRESET && preset_phase_==PresetPhase::UART_LEAD && active_preset_==n;
+  bool executing_preset(uint8_t n) const {
+    return motion_==MotionState::PRESET && preset_phase_==PresetPhase::ANNOUNCEMENT && active_preset_==n;
   }
 };
 
@@ -164,12 +164,13 @@ int main() {
       for (const auto &frame : u->tx) assert(frame[2]!=0x08);
     tick(f.bridge,22); // bounded UP wake has released pin 5
     height(f.a,285); height(f.b,285); tick(f.bridge,400);
-    assert(f.bridge.leading_preset(3));
-    assert(!f.a_action.level && !f.b_action.level);
-    assert(f.a.tx.back()[2]==0x08 && f.b.tx.back()[2]==0x08);
-    tick(f.bridge,10);
+    assert(f.bridge.executing_preset(3));
     assert(f.a_action.level && f.b_action.level);
     assert(f.a.tx.back()[2]==0x08 && f.b.tx.back()[2]==0x08);
+    for (int i=0;i<18;i++) tick(f.bridge,10);
+    assert(f.a_action.level && f.b_action.level);
+    tick(f.bridge,10);
+    assert(!f.a_action.level && !f.b_action.level);
   }
   {
     Fixture f;
