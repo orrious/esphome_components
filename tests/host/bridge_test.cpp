@@ -167,9 +167,11 @@ int main() {
     assert(f.bridge.executing_preset(3));
     assert(f.a_action.level && f.b_action.level);
     assert(f.a.tx.back()[2]==0x08 && f.b.tx.back()[2]==0x08);
+    tick(f.bridge,1); // the next loop must not release between 10 ms frames
+    assert(f.a_action.level && f.b_action.level);
     for (int i=0;i<18;i++) tick(f.bridge,10);
     assert(f.a_action.level && f.b_action.level);
-    tick(f.bridge,10);
+    tick(f.bridge,9);
     assert(!f.a_action.level && !f.b_action.level);
   }
   {

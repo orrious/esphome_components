@@ -487,9 +487,11 @@ void JSDrive2::poll_preset_(uint32_t now) {
   }
   if (box_a_.action || box_b_.action) {
     if (!preset_from_handset_) {
-      if (now-phase_started_<190 && now-last_command_tx_>=STREAM_MS)
+      if (now-phase_started_>=190) {
+        set_actions_(false,false); send_both_(CMD_IDLE,false);
+      } else if (now-last_command_tx_>=STREAM_MS) {
         send_both_(CMD_PRESET[active_preset_-1],true);
-      else { set_actions_(false,false); send_both_(CMD_IDLE,false); }
+      }
     }
   }
   if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now)) {
