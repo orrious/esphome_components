@@ -88,35 +88,6 @@ int main() {
     Fixture f;
     f.pair(285);
     assert(f.bridge.request_height(30.0f)); tick(f.bridge,10);
-    height(f.a,287); height(f.b,285); tick(f.bridge,10);
-    assert(!f.a_action.level && f.b_action.level); // A is paused at a 0.2 lead
-    assert(f.a.tx.back()[2]==0 && f.b.tx.back()[2]==0x20);
-    height(f.a,287); height(f.b,287); tick(f.bridge,10);
-    assert(f.a_action.level && f.b_action.level); // both resume when matched
-  }
-  {
-    Fixture f;
-    f.pair(300);
-    assert(f.bridge.request_height(28.0f)); tick(f.bridge,10);
-    height(f.a,298); height(f.b,300); tick(f.bridge,10);
-    assert(!f.a_action.level && f.b_action.level); // lower A leads on DOWN
-    assert(f.a.tx.back()[2]==0 && f.b.tx.back()[2]==0x40);
-  }
-  {
-    Fixture f;
-    f.pair(285);
-    assert(f.bridge.request_height(30.0f)); tick(f.bridge,10);
-    height(f.a,287); height(f.b,285); tick(f.bridge,10);
-    for (int i=0;i<36;i++) {
-      height(f.a,287); height(f.b,285); tick(f.bridge,10);
-    }
-    assert(!f.bridge.armed_for_test());
-    assert(!f.a_action.level && !f.b_action.level); // stationary B ends the move
-  }
-  {
-    Fixture f;
-    f.pair(285);
-    assert(f.bridge.request_height(30.0f)); tick(f.bridge,10);
     assert(f.a_action.level && f.b_action.level);
     blank(f.a); blank(f.b); tick(f.bridge,10);
     assert(f.bridge.armed_for_test());
@@ -164,19 +135,6 @@ int main() {
     assert(f.a_action.level && f.b_action.level); // quick second press remains usable
     command(f.remote,0x60); tick(f.bridge,10);
     assert(!f.a_action.level && !f.b_action.level); // combined buttons never reach boxes
-  }
-  {
-    Fixture f;
-    f.pair(285); command(f.remote,0); tick(f.bridge,10);
-    f.remote_action.level=true; command(f.remote,0x20); tick(f.bridge,10);
-    height(f.a,287); height(f.b,285); tick(f.bridge,10);
-    command(f.remote,0x20); tick(f.bridge,10);
-    assert(!f.a_action.level && f.b_action.level); // handset and HA pause the lead
-    command(f.remote,0x20); tick(f.bridge,10);
-    assert(!f.a_action.level && f.b_action.level); // held handset press keeps lagging B active
-    height(f.a,287); height(f.b,287); tick(f.bridge,10);
-    command(f.remote,0x20); tick(f.bridge,10);
-    assert(f.a_action.level && f.b_action.level);
   }
   {
     Fixture f;

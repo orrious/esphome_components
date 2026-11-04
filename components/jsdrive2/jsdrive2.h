@@ -139,8 +139,6 @@ class JSDrive2 : public Component {
   uint16_t align_gap_before_{0}, align_lower_before_{0}; uint8_t align_no_progress_{0};
   uint32_t recovery_started_{0}, recovery_last_attempt_{0}, last_auto_wake_{0}; bool recovery_attempted_{false};
   float target_height_{NAN}; int8_t direction_{0}; uint8_t fine_taps_{0}, active_preset_{0}, save_preset_{0}, pending_preset_{0}, align_attempts_{0};
-  uint8_t sync_lag_box_{0xFF}, sync_direction_command_{0};
-  uint32_t sync_wait_since_{0}, sync_lag_last_change_{0};
   bool preset_motion_seen_{false}, sos_{false}; uint32_t sos_until_{0};
   PresetPhase preset_phase_{PresetPhase::IDLE}; HeightQueue preset_queue_a_{}, preset_queue_b_{};
   float preset_start_{NAN}, preset_target_{NAN}, preset_raw_a_{NAN}, preset_raw_b_{NAN};
@@ -177,7 +175,6 @@ class JSDrive2 : public Component {
   void handle_box_(Box &box, const uint8_t frame[5]);
   void send_box_(Box &box, const uint8_t frame[5]);
   void send_both_(const uint8_t frame[5], bool action);
-  bool handle_direction_lag_(uint8_t command, uint32_t now);
   void send_remote_status_();
   void set_actions_(bool a, bool b);
   void set_box_action_(Box &box, bool active);

@@ -106,42 +106,6 @@ void JSDrive2::send_both_(const uint8_t frame[5], bool action) {
   last_command_tx_=millis();
 }
 
-bool JSDrive2::handle_direction_lag_(uint8_t command, uint32_t now) {
-  if (command!=0x20 && command!=0x40) return false;
-  if (!fresh_height_(box_a_,now) || !fresh_height_(box_b_,now)) return false;
-  const int a=tenths(box_a_.live_height), b=tenths(box_b_.live_height);
-  if (abs(a-b)<2) {
-    if (sync_lag_box_!=0xFF)
-      ESP_LOGI(TAG,"Motion sync: both boxes caught up at %.1f / %.1f",box_a_.live_height,box_b_.live_height);
-    sync_lag_box_=0xFF;
-    return false;
-  }
-  const uint8_t lag=command==0x20 ? (a>b?1:0) : (a<b?1:0);
-  Box &lagging=lag==0?box_a_:box_b_;
-  Box &leading=lag==0?box_b_:box_a_;
-  if (sync_lag_box_!=lag || sync_direction_command_!=command)
-    ESP_LOGW(TAG,"Motion sync: pausing box %s at %.1f; box %s is at %.1f",
-             leading.name,leading.live_height,lagging.name,lagging.live_height);
-  if (sync_lag_box_!=lag || sync_direction_command_!=command ||
-      sync_lag_last_change_!=lagging.last_change) {
-    sync_lag_box_=lag; sync_direction_command_=command;
-    sync_lag_last_change_=lagging.last_change; sync_wait_since_=now;
-  }
-  set_box_action_(leading,false);
-  if (now-sync_wait_since_>350) {
-    fail_(std::string("box ")+lagging.name+" did not catch up");
-    return true;
-  }
-  if (now-last_command_tx_>=STREAM_MS) {
-    set_box_action_(lagging,true);
-    send_box_(leading,CMD_IDLE);
-    send_box_(lagging,command_frame_(command));
-    set_bridge_command_(command);
-    last_command_tx_=now;
-  }
-  return true;
-}
-
 bool JSDrive2::box_ready_(const Box &box, uint32_t now) const {
   return box.seen && box.awake && box.wake==WakeState::IDLE && now-box.last_frame<=LINK_MS;
 }
@@ -294,7 +258,6 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
   if (command==0) {
     if (remote_button_down_) { set_actions_(false,false); send_both_(CMD_IDLE,false); }
     remote_button_down_=false; remote_command_=0;
-    sync_lag_box_=0xFF;
     remote_wake_consumed_=false;
     recovery_started_=0; recovery_last_attempt_=0; recovery_attempted_=false;
     return;
@@ -380,8 +343,6 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
       fresh_height_(box_b_,now) &&
       abs(tenths(box_a_.live_height)-tenths(box_b_.live_height))<tenths(hard_skew_) &&
       ((box_a_.action && box_b_.action) ||
-       (sync_lag_box_==0 && box_a_.action && !box_b_.action) ||
-       (sync_lag_box_==1 && box_b_.action && !box_a_.action) ||
        abs(tenths(box_a_.live_height)-tenths(box_b_.live_height))<=1);
   const bool ready=movement_ready_(memory) || manual_ready ||
       (motion_==MotionState::PRESET && manual &&
@@ -421,8 +382,7 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
   // Both handset and HA preset requests use the same on-wire command frame.
   // The handset controls release timing through its action pin; HA synthesizes
   // that press in poll_preset_.
-  if (!manual || !handle_direction_lag_(command,now))
-    send_both_(preset?command_frame_(command):f,true);
+  send_both_(preset?command_frame_(command):f,true);
   remote_button_down_=true; remote_command_=command;
 }
 
@@ -487,7 +447,6 @@ void JSDrive2::start_preset_(uint8_t preset, bool from_handset) {
   preset_announcement_visible_=false;
   preset_queue_a_.count=0; preset_queue_b_.count=0; preset_pair_wait_=0;
   preset_last_change_=now; preset_first_motion_=0;
-  sync_lag_box_=0xFF;
   motion_=MotionState::PRESET; motion_started_=phase_started_=now;
 }
 
@@ -676,7 +635,6 @@ void JSDrive2::fail_(const std::string &reason, bool disarm, bool show_sos) {
     if (box->wake==WakeState::ASSERT || box->wake==WakeState::HOLD) box->wake=WakeState::FAILED;
   motion_=MotionState::IDLE; align_=AlignState::IDLE; clear_preset_();
   align_wake_attempted_=false; override_align_=false;
-  sync_lag_box_=0xFF;
   target_height_=NAN; direction_=0; pending_preset_=0;
   fault_=reason; if (disarm) armed_=false;
   if (!std::isnan(preset_direction) && fabsf(preset_direction)>=0.05f) {
@@ -692,7 +650,6 @@ void JSDrive2::fail_(const std::string &reason, bool disarm, bool show_sos) {
 void JSDrive2::finish_motion_(const char *reason) {
   set_actions_(false,false); send_box_(box_a_,CMD_IDLE); send_box_(box_b_,CMD_IDLE);
   motion_=MotionState::IDLE; clear_preset_();
-  sync_lag_box_=0xFF;
   target_height_=NAN; direction_=0; fine_taps_=0; pending_preset_=0;
   ESP_LOGI(TAG,"%s",reason); update_confirmed_(); publish_();
 }
@@ -850,8 +807,6 @@ void JSDrive2::poll_motion_() {
   if (a==target && b==target) { finish_motion_("requested height reached by both boxes"); return; }
   bool crossed=direction_>0 ? (a>target || b>target) : (a<target || b<target);
   if (crossed) { fail_("target crossed before both boxes matched"); return; }
-  if (motion_==MotionState::COARSE &&
-      handle_direction_lag_(direction_>0?0x20:0x40,now)) return;
   int remaining=direction_>0 ? target-std::max(a,b) : std::min(a,b)-target;
   if (motion_==MotionState::COARSE && remaining<=tenths(COARSE_RELEASE)) {
     set_actions_(false,false); send_both_(CMD_IDLE,false); motion_=MotionState::FINE_SETTLE; phase_started_=now; return;
