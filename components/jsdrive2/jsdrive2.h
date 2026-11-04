@@ -171,7 +171,7 @@ class JSDrive2 : public Component {
   // rounded up, before treating a held action stream as stale.
   static constexpr uint32_t ACTION_WATCHDOG_MS = 120, SLEEP_STABLE_MS = 50, WAKE_RETRY_MS = 3000;
   static constexpr float COARSE_RELEASE = 0.3f;
-  static const uint8_t CMD_IDLE[5], CMD_UP[5], CMD_DOWN[5], CMD_M[5], CMD_PRESET[4][5];
+  static const uint8_t CMD_IDLE[5], CMD_WAKE_CHORD[5], CMD_UP[5], CMD_DOWN[5], CMD_M[5], CMD_PRESET[4][5];
   bool parse_(Parser &parser, uint8_t byte, uint8_t out[5]);
   void poll_uart_(uart::UARTComponent *uart, Parser &parser, bool remote, Box *box = nullptr);
   void handle_remote_(const uint8_t frame[5]);

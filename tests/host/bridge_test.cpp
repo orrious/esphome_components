@@ -46,6 +46,10 @@ static bool shows_snc(const UARTComponent &u) {
   const auto &f=u.tx.back();
   return f[1]==0x6D && f[2]==0x54 && f[3]==0x39;
 }
+static bool sent_command(const UARTComponent &u, uint8_t command) {
+  for (const auto &frame : u.tx) if (frame[2]==command) return true;
+  return false;
+}
 static void tick(JSDrive2 &b, uint32_t n=1) { esphome::test_ms+=n; b.loop(); }
 
 struct Fixture {
@@ -180,9 +184,9 @@ int main() {
   {
     Fixture f;
     f.a_awake.level=false; tick(f.bridge,1); tick(f.bridge,60);
-    assert(f.a_action.level && !f.b_action.level); // wake only the sleeping box
-    assert(!f.a.tx.empty() && f.a.tx.back()[2]==0x00); // wake never sends motion
-    tick(f.bridge,22); assert(!f.a_action.level && !f.b_action.level);
+    assert(!f.a_action.level && !f.b_action.level); // pulse completes synchronously
+    assert(sent_command(f.a,0x60));
+    assert(f.a.tx.back()[2]==0x00); // chord is followed by idle with pin 5 low
   }
   {
     Fixture f;
@@ -190,13 +194,15 @@ int main() {
     f.remote_action.level=true; command(f.remote,0x20); tick(f.bridge,10);
     tick(f.bridge,10);
     assert(shown(f.remote)!=505); // first wake press is not a fault
-    assert(f.a_action.level && f.b_action.level);
+    assert(!f.a_action.level && !f.b_action.level);
+    assert(sent_command(f.a,0x60));
+    assert(sent_command(f.b,0x60));
   }
   {
     Fixture f;
     height(f.a,299); height(f.b,297); tick(f.bridge);
     blank(f.a); blank(f.b); tick(f.bridge,400);
-    assert(f.a_action.level && f.b_action.level); // stale heights start wake, not correction
+    assert(!f.a_action.level && !f.b_action.level); // bounded wakes have completed
     for (const auto *u : {&f.a,&f.b})
       for (const auto &frame : u->tx) assert(frame[2]!=0x40); // no blind DOWN
   }

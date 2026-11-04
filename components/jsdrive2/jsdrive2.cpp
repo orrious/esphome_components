@@ -10,6 +10,7 @@ namespace jsdrive2 {
 static const char *const TAG = "jsdrive2";
 static const uint8_t SEG[10] = {0x3F,0x06,0x5B,0x4F,0x66,0x6D,0x7D,0x07,0x7F,0x6F};
 const uint8_t JSDrive2::CMD_IDLE[5] = {0xA5,0x00,0x00,0xFF,0xFF};
+const uint8_t JSDrive2::CMD_WAKE_CHORD[5] = {0xA5,0x00,0x60,0x9F,0xFF};
 const uint8_t JSDrive2::CMD_UP[5] = {0xA5,0x00,0x20,0xDF,0xFF};
 const uint8_t JSDrive2::CMD_DOWN[5] = {0xA5,0x00,0x40,0xBF,0xFF};
 const uint8_t JSDrive2::CMD_M[5] = {0xA5,0x00,0x01,0xFE,0xFF};
@@ -141,21 +142,30 @@ bool JSDrive2::wake_ready_() const {
 
 void JSDrive2::start_wake_(Box &box) {
   if (box.wake!=WakeState::IDLE || box.action_pin==nullptr || box.uart==nullptr) return;
-  box.wake=WakeState::ASSERT; box.wake_started=millis();
+  box.wake_started=millis();
+  const auto before=box.uart->flush();
+  const bool before_ok=before==uart::UARTFlushResult::UART_FLUSH_RESULT_SUCCESS ||
+                       before==uart::UARTFlushResult::UART_FLUSH_RESULT_ASSUMED_SUCCESS;
+  if (!before_ok) {
+    box.wake=WakeState::FAILED;
+    ESP_LOGW(TAG,"Wake %s failed: queued idle frames did not drain",box.name);
+    return;
+  }
   set_box_action_(box,true);
-  ESP_LOGI(TAG,"Wake %s: pin 5 asserted",box.name);
+  send_box_(box,CMD_WAKE_CHORD);
+  const auto after=box.uart->flush();
+  set_box_action_(box,false);
+  send_box_(box,CMD_IDLE);
+  const bool after_ok=after==uart::UARTFlushResult::UART_FLUSH_RESULT_SUCCESS ||
+                      after==uart::UARTFlushResult::UART_FLUSH_RESULT_ASSUMED_SUCCESS;
+  box.wake=after_ok?WakeState::WAIT_HEIGHT:WakeState::FAILED;
+  if (after_ok)
+    ESP_LOGI(TAG,"Wake %s: one UP+DOWN frame sent with pin 5 high",box.name);
+  else
+    ESP_LOGW(TAG,"Wake %s failed: UP+DOWN frame did not drain",box.name);
 }
 
 void JSDrive2::poll_wake_(Box &box, uint32_t now) {
-  if (box.wake==WakeState::ASSERT && now-box.wake_started>=10) {
-    // Pin 5 is the wake/dead-man signal. Pair it with the no-button frame so
-    // waking a single box cannot move that side of the desk.
-    send_box_(box,CMD_IDLE); box.wake=WakeState::HOLD;
-  }
-  if (box.wake==WakeState::HOLD && now-box.wake_started>=21) {
-    set_box_action_(box,false); send_box_(box,CMD_IDLE);
-    box.wake=WakeState::WAIT_HEIGHT;
-  }
   if (box.wake==WakeState::WAIT_HEIGHT) {
     if (box.awake && box.seen && !std::isnan(box.live_height) &&
         box.last_height>=box.wake_started && now-box.last_height<=LIVE_MS) {
