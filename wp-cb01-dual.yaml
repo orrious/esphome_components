@@ -32,8 +32,8 @@ external_components:
   - source:
       type: git
       url: https://github.com/orrious/esphome_components
-      # Development branch containing components/jsdrive2.
-      ref: wp-cb01-dual-box
+      # Pinned to the jsdrive2 version currently flashed on this desk.
+      ref: 73453332427f3b94baa7f177db68316d85bc4beb
     components: [jsdrive2]
 
 # All three WP-CB01 links are 9600 baud, 8 data bits, no parity, 1 stop bit.

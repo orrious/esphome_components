@@ -6,7 +6,8 @@ independent UART sessions; the bridge monitors both box heights and stops motion
 when their positions diverge beyond the configured limit.
 
 The [example configuration](wp-cb01-dual.yaml) shows the ESP32-S3 wiring and
-Home Assistant entities. It pulls `jsdrive2` from the `wp-cb01-dual-box` branch.
+Home Assistant entities. It pins `jsdrive2` to the commit flashed on this desk;
+update that ref deliberately after validating a newer build.
 
 ## Attribution
 
