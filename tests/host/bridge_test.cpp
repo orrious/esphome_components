@@ -241,22 +241,57 @@ int main() {
     f.bridge.simulate_failed_alignment();
     height(f.a,338); height(f.b,286); tick(f.bridge,900);
     // The recovery chord is valid even when the handset action line is low.
-    for (int i=0;i<7;i++) {
-      height(f.a,338); height(f.b,286); command(f.remote,0x60); tick(f.bridge,100);
+    for (int i=0;i<70;i++) {
+      height(f.a,338); height(f.b,286);
+      if (i%10==0) command(f.remote,0x60);
+      tick(f.bridge,10);
     }
     assert(f.bridge.override_active());
-    assert(!f.a_action.level && !f.b_action.level);
-    command(f.remote,0); height(f.a,338); height(f.b,286); tick(f.bridge,10);
     assert(f.a_action.level && !f.b_action.level); // only the higher box gets DOWN
     assert(f.a.tx.back()[2]==0x40);
-    for (int i=0;i<19;i++) tick(f.bridge,10);
-    assert(!f.a_action.level && !f.b_action.level);
-    height(f.a,337); height(f.b,286); tick(f.bridge,800);
-    height(f.a,337); height(f.b,286); tick(f.bridge,400);
-    assert(f.a_action.level && !f.b_action.level);
-    for (int i=0;i<19;i++) tick(f.bridge,10);
-    height(f.a,286); height(f.b,286); tick(f.bridge,800);
+    height(f.a,338); height(f.b,286); tick(f.bridge,35);
+    assert(f.a_action.level && !f.b_action.level); // observed 35 ms loop gap is tolerated
+    for (int i=0;i<50;i++) {
+      height(f.a,338); height(f.b,286); tick(f.bridge,10);
+      assert(f.a_action.level && !f.b_action.level); // held continuously past 190 ms
+      assert(f.a.tx.back()[2]==0x40);
+    }
+    command(f.remote,0); height(f.a,338); height(f.b,286); tick(f.bridge,10);
+    assert(f.a_action.level && !f.b_action.level); // releasing chord does not interrupt correction
+    height(f.a,337); height(f.b,286); tick(f.bridge,10);
+    height(f.a,286); height(f.b,286); tick(f.bridge,10);
+    assert(!f.a_action.level && !f.b_action.level); // release DOWN at the lower height
+    for (int i=0;i<40;i++) { height(f.a,286); height(f.b,286); tick(f.bridge,10); }
     assert(f.bridge.recovered_alignment_cleared());
+  }
+  {
+    Fixture f;
+    height(f.a,299); height(f.b,290); tick(f.bridge);
+    f.bridge.simulate_failed_alignment();
+    for (int i=0;i<70;i++) {
+      height(f.a,299); height(f.b,290);
+      if (i%10==0) command(f.remote,0x60);
+      tick(f.bridge,10);
+    }
+    assert(f.a_action.level && !f.b_action.level);
+    for (int i=0;i<151;i++) { height(f.a,299); height(f.b,290); tick(f.bridge,10); }
+    assert(!f.a_action.level && !f.b_action.level); // no height progress stops continuous drive
+    assert(!f.bridge.armed_for_test());
+  }
+  {
+    Fixture f;
+    height(f.a,290); height(f.b,298); tick(f.bridge);
+    f.bridge.simulate_failed_alignment();
+    for (int i=0;i<60;i++) {
+      height(f.a,290); height(f.b,298);
+      if (i%10==0) command(f.remote,0x60);
+      tick(f.bridge,10);
+    }
+    assert(!f.a_action.level && f.b_action.level); // B is higher, so only B gets DOWN
+    assert(f.b.tx.back()[2]==0x40 && f.a.tx.back()[2]==0);
+    height(f.a,291); height(f.b,298); tick(f.bridge,10);
+    assert(!f.a_action.level && !f.b_action.level); // lower side changed: stop
+    assert(!f.bridge.armed_for_test());
   }
   std::cout << "jsdrive2 host bridge tests passed\n";
 }

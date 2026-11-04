@@ -43,12 +43,15 @@ monitored using matched height reports from both boxes, including the matched
 destination announcement before physical travel. A physical handset command
 has priority over an API move. Handset UP and DOWN can continue across a one
 step reporting lag while both boxes remain below the hard skew limit. A held
-UP+DOWN chord can recover a disarmed bridge only after both boxes have settled.
+UP+DOWN chord can recover a disarmed bridge: it holds DOWN continuously on the
+higher box until its reported height reaches the lower box, then verifies the
+settled heights before rearming. The lower box receives only idle frames.
 
 Each box has its own bounded wake attempt. The bridge keeps an independent
 10 ms idle stream to each box and a synthesized status stream to the handset.
 The handset display blanks when both box displays time out. Active pin 5 outputs
-have a 30 ms command watchdog, and a lost UART link or awake signal lowers
+have a 30 ms command watchdog (60 ms during the continuous recovery), and a
+lost UART link or awake signal lowers
 the outputs. A normal first-button wake does not show SOS while fresh heights
 are pending. Simultaneous button masks are never sent to either box.
 

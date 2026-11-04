@@ -103,7 +103,7 @@ class JSDrive2 : public Component {
   enum class DisplayState : uint8_t { UNKNOWN, BLANK, HEIGHT, MEMORY, ERROR, OTHER };
   enum class MotionState : uint8_t { IDLE, DISCOVER_WAIT, COARSE, FINE_PULSE, FINE_SETTLE, PRESET, SAVE_M, SAVE_SLOT };
   enum class WakeState : uint8_t { IDLE, ASSERT, HOLD, WAIT_HEIGHT, FAILED };
-  enum class AlignState : uint8_t { IDLE, PULSE, SETTLE };
+  enum class AlignState : uint8_t { IDLE, PULSE, SETTLE, OVERRIDE_RUN };
   enum class PresetPhase : uint8_t { IDLE, ANNOUNCEMENT, WAIT_MOTION, MOVING };
   struct Parser { uint8_t start{0}; uint8_t data[5]{}; uint8_t length{0}; uint32_t invalid{0}; };
   struct HeightQueue {
@@ -136,7 +136,8 @@ class JSDrive2 : public Component {
   uint32_t align_wake_started_{0}; bool align_wake_attempted_{false};
   uint8_t align_high_box_{0xFF}; uint8_t align_duration_{0};
   bool override_align_{false}; uint32_t override_started_{0};
-  uint16_t align_gap_before_{0}, align_lower_before_{0}; uint8_t align_no_progress_{0};
+  uint32_t override_last_progress_{0}; int16_t override_high_last_{0};
+  uint16_t align_lower_before_{0};
   uint32_t recovery_started_{0}, recovery_last_attempt_{0}, last_auto_wake_{0}; bool recovery_attempted_{false};
   float target_height_{NAN}; int8_t direction_{0}; uint8_t fine_taps_{0}, active_preset_{0}, save_preset_{0}, pending_preset_{0}, align_attempts_{0};
   bool preset_motion_seen_{false}, sos_{false}; uint32_t sos_until_{0};

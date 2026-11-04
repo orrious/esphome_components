@@ -182,6 +182,9 @@ void JSDrive2::poll_action_watchdog_(uint32_t now) {
     const bool align_pulse=align_==AlignState::PULSE &&
                            now-align_started_<=uint32_t(align_duration_)+10 &&
                            now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
+    const bool override_run=override_align_ && align_==AlignState::OVERRIDE_RUN &&
+                            box==((align_high_box_==0)?&box_a_:&box_b_) &&
+                            now-box->last_nonidle_tx<=60; // observed loop gaps reach 35 ms
     const bool handset=armed_ && remote_action_ && remote_button_down_ &&
                        now-remote_last_frame_<=ACTION_WATCHDOG_MS &&
                        now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
@@ -195,9 +198,10 @@ void JSDrive2::poll_action_watchdog_(uint32_t now) {
       fail_("box slept while action output was high");
       return;
     }
-    if (!(wake_pulse || align_pulse || handset || bridge || preset_cancel)) {
+    if (!(wake_pulse || align_pulse || override_run || handset || bridge || preset_cancel)) {
       set_box_action_(*box,false);
-      if (align_==AlignState::PULSE) fail_("alignment command watchdog expired");
+      if (align_==AlignState::PULSE || align_==AlignState::OVERRIDE_RUN)
+        fail_("alignment command watchdog expired");
       else if (motion_!=MotionState::IDLE) fail_("action watchdog expired");
       else ESP_LOGW(TAG,"Action watchdog released box %s",box->name);
     }
@@ -256,7 +260,9 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
   remote_action_=physical;
   if (preset_cancel_until_!=0) return;
   if (command==0) {
-    if (remote_button_down_) { set_actions_(false,false); send_both_(CMD_IDLE,false); }
+    if (remote_button_down_ && !override_align_) {
+      set_actions_(false,false); send_both_(CMD_IDLE,false);
+    }
     remote_button_down_=false; remote_command_=0;
     remote_wake_consumed_=false;
     recovery_started_=0; recovery_last_attempt_=0; recovery_attempted_=false;
@@ -268,7 +274,7 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
     if (motion_==MotionState::COARSE || motion_==MotionState::FINE_PULSE ||
         motion_==MotionState::FINE_SETTLE || motion_==MotionState::DISCOVER_WAIT)
       stop("simultaneous handset buttons took control");
-    set_actions_(false,false); send_both_(CMD_IDLE,false);
+    if (!override_align_) { set_actions_(false,false); send_both_(CMD_IDLE,false); }
     if (!armed_) {
       if (recovery_started_==0) recovery_started_=now;
       if (!recovery_attempted_ && now-recovery_started_>=500 &&
@@ -739,7 +745,8 @@ bool JSDrive2::recover_() {
   armed_=false; override_align_=true; override_started_=now;
   fault_="override alignment in progress"; error_="none";
   align_attempts_=0; align_high_box_=0xFF; align_wake_attempted_=false;
-  align_gap_before_=0; align_no_progress_=0;
+  override_last_progress_=0; override_high_last_=0;
+  align_lower_before_=0;
   ESP_LOGW(TAG,"UP+DOWN override: lowering higher box from %.1f / %.1f",
            box_a_.last_good,box_b_.last_good);
   publish_(); return true;
@@ -834,6 +841,87 @@ void JSDrive2::poll_alignment_() {
   if (override_align_ && now-override_started_>90000) {
     fail_("UP+DOWN override timed out"); return;
   }
+  if (override_align_) {
+    if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now)) {
+      fail_("box link lost during UP+DOWN override"); return;
+    }
+    if (align_==AlignState::OVERRIDE_RUN || align_==AlignState::SETTLE) {
+      Box &higher=align_high_box_==0?box_a_:box_b_;
+      Box &lower=align_high_box_==0?box_b_:box_a_;
+      if (!fresh_height_(higher,now)) {
+        fail_("higher box height missing during UP+DOWN override"); return;
+      }
+      const int high=tenths(higher.live_height), low=tenths(lower.last_good);
+      if (low!=align_lower_before_) {
+        fail_("lower box changed during UP+DOWN override"); return;
+      }
+      if (high<low) {
+        fail_("UP+DOWN override crossed below lower box"); return;
+      }
+      if (align_==AlignState::OVERRIDE_RUN) {
+        if (high<override_high_last_) {
+          override_high_last_=high; override_last_progress_=now;
+        }
+        if (high==low) {
+          set_box_action_(higher,false); send_box_(higher,CMD_IDLE);
+          align_=AlignState::SETTLE; align_started_=now;
+          ESP_LOGI(TAG,"UP+DOWN override reached %.1f; verifying stop",higher.live_height);
+          return;
+        }
+        if (now-override_last_progress_>1500) {
+          fail_("higher box made no progress during UP+DOWN override"); return;
+        }
+        if (now-higher.last_nonidle_tx>=STREAM_MS) send_box_(higher,CMD_DOWN);
+        return;
+      }
+      if (now-align_started_<400) return;
+      if (high>low) {
+        // Stopping can leave the higher box one step short. Continue the same
+        // held DOWN command after verifying the lower box stayed fixed.
+        align_=AlignState::OVERRIDE_RUN;
+        override_high_last_=high; override_last_progress_=now;
+        set_box_action_(higher,true); send_box_(higher,CMD_DOWN);
+        return;
+      }
+      override_align_=false; armed_=true; fault_="none"; error_="none";
+      align_=AlignState::IDLE; align_high_box_=0xFF;
+      align_wake_attempted_=false; align_attempts_=0;
+      update_confirmed_(); publish_();
+      ESP_LOGI(TAG,"UP+DOWN override complete: both boxes at %.1f",higher.live_height);
+      return;
+    }
+    if (!fresh_height_(box_a_,now) || !fresh_height_(box_b_,now)) {
+      if (!align_wake_attempted_) {
+        align_wake_attempted_=true; align_wake_started_=now;
+        for (Box *box : {&box_a_,&box_b_}) {
+          if (box->wake==WakeState::FAILED) box->wake=WakeState::IDLE;
+          if (!fresh_height_(*box,now)) start_wake_(*box);
+        }
+      } else if (now-align_wake_started_>2000) {
+        fail_("UP+DOWN override could not obtain fresh heights");
+      }
+      return;
+    }
+    const int a=tenths(box_a_.live_height), b=tenths(box_b_.live_height);
+    if (a==b) {
+      override_align_=false; armed_=true; fault_="none"; error_="none";
+      align_=AlignState::IDLE; align_high_box_=0xFF;
+      update_confirmed_(); publish_();
+      return;
+    }
+    align_high_box_=a>b?0:1;
+    Box &higher=align_high_box_==0?box_a_:box_b_;
+    Box &lower=align_high_box_==0?box_b_:box_a_;
+    align_lower_before_=tenths(lower.live_height);
+    override_high_last_=tenths(higher.live_height);
+    override_last_progress_=now;
+    align_=AlignState::OVERRIDE_RUN;
+    set_box_action_(lower,false); send_box_(lower,CMD_IDLE);
+    set_box_action_(higher,true); send_box_(higher,CMD_DOWN);
+    ESP_LOGW(TAG,"UP+DOWN override: holding box %s DOWN from %.1f to %.1f",
+             higher.name,higher.live_height,lower.live_height);
+    return;
+  }
   if (align_==AlignState::PULSE) {
     Box &higher=align_high_box_==0?box_a_:box_b_;
     Box &lower=align_high_box_==0?box_b_:box_a_;
@@ -850,15 +938,13 @@ void JSDrive2::poll_alignment_() {
         motion_==MotionState::FINE_SETTLE) || remote_button_down_ || remote_action_) return;
   if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now) ||
       std::isnan(box_a_.last_good) || std::isnan(box_b_.last_good)) {
-    if ((align_==AlignState::SETTLE && now-align_started_>2000) ||
-        (override_align_ && now-override_started_>5000))
+    if (align_==AlignState::SETTLE && now-align_started_>2000)
       fail_("box link lost after correction pulse");
     return;
   }
   if (align_==AlignState::SETTLE && now-align_started_<800) return;
   int d=tenths(box_a_.last_good)-tenths(box_b_.last_good);
-  if ((d!=0 || override_align_) &&
-      (!fresh_height_(box_a_,now) || !fresh_height_(box_b_,now))) {
+  if (d!=0 && (!fresh_height_(box_a_,now) || !fresh_height_(box_b_,now))) {
     if (!align_wake_attempted_) {
       align_wake_attempted_=true; align_wake_started_=now;
       for (Box *box : {&box_a_,&box_b_}) {
@@ -871,49 +957,29 @@ void JSDrive2::poll_alignment_() {
     }
     return;
   }
-  if (override_align_ && align_==AlignState::SETTLE && align_high_box_!=0xFF) {
-    const Box &lower=align_high_box_==0?box_b_:box_a_;
-    if (tenths(lower.live_height)!=align_lower_before_) {
-      fail_("lower box changed during UP+DOWN override"); return;
-    }
-    if (abs(d)>align_gap_before_) {
-      fail_("UP+DOWN override increased height difference"); return;
-    }
-  }
   if (d==0) {
-    const bool completed=align_!=AlignState::IDLE || override_align_;
+    const bool completed=align_!=AlignState::IDLE;
     if (completed) ESP_LOGI(TAG,"Boxes aligned at %.1f",box_a_.last_good);
-    if (override_align_) {
-      override_align_=false; armed_=true; fault_="none"; error_="none";
-      ESP_LOGI(TAG,"UP+DOWN override complete; both boxes at %.1f",box_a_.last_good);
-    }
     align_=AlignState::IDLE; align_attempts_=0; align_high_box_=0xFF;
-    align_wake_attempted_=false; align_no_progress_=0;
+    align_wake_attempted_=false;
     update_confirmed_(); if (completed) publish_(); return;
   }
-  if (!override_align_ && abs(d)>=tenths(hard_skew_)) {
+  if (abs(d)>=tenths(hard_skew_)) {
     fail_("stopped boxes exceed hard skew"); return;
   }
   if (now-box_a_.last_change<400 || now-box_b_.last_change<400) return;
-  if (align_==AlignState::SETTLE && override_align_) {
-    if (abs(d)==align_gap_before_) align_no_progress_++;
-    else align_no_progress_=0;
-    if (align_no_progress_>=3) {
-      fail_("UP+DOWN override made no height progress"); return;
-    }
-  }
   const uint8_t high=d>0?0:1;
   if (align_high_box_!=0xFF && align_high_box_!=high) {
     fail_("correction crossed past the lower box"); return;
   }
-  if (align_attempts_>=(override_align_?80:3)) {
+  if (align_attempts_>=3) {
     fail_("alignment pulse limit reached"); return;
   }
   Box &higher=high==0?box_a_:box_b_;
   // A 190 ms hold is the shortest tap exercised by the bridge's target
   // positioning path. Stop sooner if the higher box reports the lower height.
   align_duration_=190;
-  align_gap_before_=abs(d); align_lower_before_=tenths(high==0?box_b_.last_good:box_a_.last_good);
+  align_lower_before_=tenths(high==0?box_b_.last_good:box_a_.last_good);
   align_high_box_=high; align_attempts_++;
   align_=AlignState::PULSE; align_started_=now;
   set_box_action_(higher,true); send_box_(higher,CMD_DOWN);
@@ -968,7 +1034,8 @@ void JSDrive2::loop() {
   if (box_b_.seen && now-box_b_.last_frame>LINK_MS) box_b_.seen=false;
   if (remote_seen_ && now-remote_last_frame_>LINK_MS) {
     remote_seen_=false; remote_button_down_=false; remote_wake_consumed_=false; remote_command_=0;
-    set_actions_(false,false); set_handset_buttons_(0);
+    if (!override_align_) set_actions_(false,false);
+    set_handset_buttons_(0);
     if (motion_==MotionState::PRESET && preset_from_handset_)
       fail_("handset link lost during preset travel");
   }
