@@ -12,7 +12,7 @@ using esphome::binary_sensor::BinarySensor;
 struct ProbeBridge : JSDrive2 {
   using JSDrive2::recover_;
   void simulate_failed_alignment() {
-    armed_=false; align_attempts_=3; align_high_box_=0; align_wake_attempted_=true;
+    armed_=false; sync_required_=true; align_attempts_=3; align_high_box_=0; align_wake_attempted_=true;
   }
   bool override_active() const {
     return override_align_ && !armed_;
@@ -40,6 +40,11 @@ static int shown(const UARTComponent &u) {
     return -1;
   };
   return 100*digit(f[1])+10*digit(f[2])+digit(f[3]);
+}
+static bool shows_snc(const UARTComponent &u) {
+  if (u.tx.empty()) return false;
+  const auto &f=u.tx.back();
+  return f[1]==0x6D && f[2]==0x54 && f[3]==0x39;
 }
 static void tick(JSDrive2 &b, uint32_t n=1) { esphome::test_ms+=n; b.loop(); }
 
@@ -114,7 +119,9 @@ int main() {
     assert(shown(f.remote)==285);
     f.remote_action.level=true; command(f.remote,0x20); tick(f.bridge,10);
     assert(f.a_action.level && f.b_action.level);
-    tick(f.bridge,31);
+    tick(f.bridge,119);
+    assert(f.a_action.level && f.b_action.level); // three observed 35 ms gaps are tolerated
+    tick(f.bridge,2);
     assert(!f.a_action.level && !f.b_action.level); // stale handset stream drops the action lines
   }
   {
@@ -123,6 +130,10 @@ int main() {
     f.remote_action.level=true; command(f.remote,0x20); tick(f.bridge,10);
     height(f.a,290); tick(f.bridge,10);
     assert(!f.a_action.level && !f.b_action.level); // 0.5 split stops both sides
+    assert(shows_snc(f.remote));
+    f.remote_action.level=false; command(f.remote,0); tick(f.bridge,10);
+    f.remote_action.level=true; command(f.remote,0x40); tick(f.bridge,10);
+    assert(f.a_action.level && !f.b_action.level); // held DOWN lowers only higher A
   }
   {
     Fixture f;
@@ -198,9 +209,7 @@ int main() {
     f.pair(285); f.bridge.simulate_failed_alignment();
     height(f.a,285); height(f.b,285); tick(f.bridge,900);
     f.bridge.arm();
-    assert(f.bridge.override_active());
-    height(f.a,285); height(f.b,285); tick(f.bridge);
-    assert(f.bridge.recovered_alignment_cleared());
+    assert(f.bridge.recovered_alignment_cleared()); // equal healthy boxes arm directly
   }
   {
     Fixture f;
@@ -250,10 +259,11 @@ int main() {
     height(f.a,338); height(f.b,286); tick(f.bridge);
     f.bridge.simulate_failed_alignment();
     height(f.a,338); height(f.b,286); tick(f.bridge,900);
-    // The recovery chord is valid even when the handset action line is low.
+    // Held DOWN starts synchronization and drives only the higher box.
+    f.remote_action.level=true;
     for (int i=0;i<70;i++) {
       height(f.a,338); height(f.b,286);
-      if (i%10==0) command(f.remote,0x60);
+      if (i%10==0) command(f.remote,0x40);
       tick(f.bridge,10);
     }
     assert(f.bridge.override_active());
@@ -266,21 +276,23 @@ int main() {
       assert(f.a_action.level && !f.b_action.level); // held continuously past 190 ms
       assert(f.a.tx.back()[2]==0x40);
     }
-    command(f.remote,0); height(f.a,338); height(f.b,286); tick(f.bridge,10);
-    assert(f.a_action.level && !f.b_action.level); // releasing chord does not interrupt correction
     height(f.a,337); height(f.b,286); tick(f.bridge,10);
     height(f.a,286); height(f.b,286); tick(f.bridge,10);
     assert(!f.a_action.level && !f.b_action.level); // release DOWN at the lower height
     for (int i=0;i<40;i++) { height(f.a,286); height(f.b,286); tick(f.bridge,10); }
     assert(f.bridge.recovered_alignment_cleared());
+    command(f.remote,0x40); height(f.a,286); height(f.b,286); tick(f.bridge,10);
+    assert(!f.a_action.level && !f.b_action.level); // held DOWN is consumed after recovery
+    f.remote_action.level=false; command(f.remote,0); tick(f.bridge,10);
   }
   {
     Fixture f;
     height(f.a,299); height(f.b,290); tick(f.bridge);
     f.bridge.simulate_failed_alignment();
+    f.remote_action.level=true;
     for (int i=0;i<70;i++) {
       height(f.a,299); height(f.b,290);
-      if (i%10==0) command(f.remote,0x60);
+      if (i%10==0) command(f.remote,0x40);
       tick(f.bridge,10);
     }
     assert(f.a_action.level && !f.b_action.level);
@@ -292,15 +304,26 @@ int main() {
     Fixture f;
     height(f.a,290); height(f.b,298); tick(f.bridge);
     f.bridge.simulate_failed_alignment();
+    f.remote_action.level=true;
     for (int i=0;i<60;i++) {
       height(f.a,290); height(f.b,298);
-      if (i%10==0) command(f.remote,0x60);
+      if (i%10==0) command(f.remote,0x40);
       tick(f.bridge,10);
     }
     assert(!f.a_action.level && f.b_action.level); // B is higher, so only B gets DOWN
     assert(f.b.tx.back()[2]==0x40 && f.a.tx.back()[2]==0);
     height(f.a,291); height(f.b,298); tick(f.bridge,10);
     assert(!f.a_action.level && !f.b_action.level); // lower side changed: stop
+    assert(!f.bridge.armed_for_test());
+  }
+  {
+    Fixture f;
+    height(f.a,305); height(f.b,290); tick(f.bridge);
+    f.bridge.simulate_failed_alignment();
+    f.remote_action.level=true; command(f.remote,0x40); tick(f.bridge,10);
+    assert(f.a_action.level && !f.b_action.level);
+    f.remote_action.level=false; command(f.remote,0); tick(f.bridge,10);
+    assert(!f.a_action.level && !f.b_action.level); // releasing DOWN stops recovery
     assert(!f.bridge.armed_for_test());
   }
   std::cout << "jsdrive2 host bridge tests passed\n";

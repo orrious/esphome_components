@@ -140,7 +140,7 @@ class JSDrive2 : public Component {
   uint16_t align_lower_before_{0};
   uint32_t recovery_started_{0}, recovery_last_attempt_{0}, last_auto_wake_{0}; bool recovery_attempted_{false};
   float target_height_{NAN}; int8_t direction_{0}; uint8_t fine_taps_{0}, active_preset_{0}, save_preset_{0}, pending_preset_{0}, align_attempts_{0};
-  bool preset_motion_seen_{false}, sos_{false}; uint32_t sos_until_{0};
+  bool preset_motion_seen_{false}, sos_{false}, sync_required_{false}; uint32_t sos_until_{0};
   PresetPhase preset_phase_{PresetPhase::IDLE}; HeightQueue preset_queue_a_{}, preset_queue_b_{};
   float preset_start_{NAN}, preset_target_{NAN}, preset_raw_a_{NAN}, preset_raw_b_{NAN};
   uint32_t preset_last_change_{0}, preset_first_motion_{0}, preset_pair_wait_{0};
@@ -167,7 +167,9 @@ class JSDrive2 : public Component {
 
   static constexpr uint32_t STREAM_MS = 10, LINK_MS = 500, LIVE_MS = 150, TARGET_TIMEOUT_MS = 45000;
   static constexpr uint32_t FINE_PULSE_MS = 190, FINE_SETTLE_MS = 500, PRESET_PAIR_MS = 500;
-  static constexpr uint32_t ACTION_WATCHDOG_MS = 30, SLEEP_STABLE_MS = 50, WAKE_RETRY_MS = 3000;
+  // The device has observed normal loop gaps of 35 ms. Allow three such gaps,
+  // rounded up, before treating a held action stream as stale.
+  static constexpr uint32_t ACTION_WATCHDOG_MS = 120, SLEEP_STABLE_MS = 50, WAKE_RETRY_MS = 3000;
   static constexpr float COARSE_RELEASE = 0.3f;
   static const uint8_t CMD_IDLE[5], CMD_UP[5], CMD_DOWN[5], CMD_M[5], CMD_PRESET[4][5];
   bool parse_(Parser &parser, uint8_t byte, uint8_t out[5]);
