@@ -132,6 +132,7 @@ class JSDrive2 : public Component {
   float min_height_{25.9f}, max_height_{51.5f}, hard_skew_{0.5f}, confirmed_height_{NAN};
   MotionState motion_{MotionState::IDLE}; uint32_t motion_started_{0}, phase_started_{0}, last_command_tx_{0};
   AlignState align_{AlignState::IDLE}; uint32_t align_started_{0};
+  uint32_t align_wake_started_{0}; bool align_wake_attempted_{false};
   uint8_t align_high_box_{0xFF}; uint8_t align_duration_{0};
   uint32_t recovery_started_{0}, last_auto_wake_{0}; bool recovery_attempted_{false};
   float target_height_{NAN}; int8_t direction_{0}; uint8_t fine_taps_{0}, active_preset_{0}, save_preset_{0}, align_attempts_{0};

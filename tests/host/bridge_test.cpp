@@ -7,6 +7,16 @@ using esphome::jsdrive2::JSDrive2;
 using esphome::uart::UARTComponent;
 using esphome::GPIOPin;
 
+struct ProbeBridge : JSDrive2 {
+  using JSDrive2::recover_;
+  void simulate_failed_alignment() {
+    armed_=false; align_attempts_=3; align_high_box_=0; align_wake_attempted_=true;
+  }
+  bool recovered_alignment_cleared() const {
+    return armed_ && align_attempts_==0 && align_high_box_==0xFF && !align_wake_attempted_;
+  }
+};
+
 static constexpr uint8_t seg[] = {0x3F,0x06,0x5B,0x4F,0x66,0x6D,0x7D,0x07,0x7F,0x6F};
 static void height(UARTComponent &u, int n) {
   const int whole=n/10;
@@ -28,7 +38,7 @@ static int shown(const UARTComponent &u) {
 static void tick(JSDrive2 &b, uint32_t n=1) { esphome::test_ms+=n; b.loop(); }
 
 struct Fixture {
-  JSDrive2 bridge;
+  ProbeBridge bridge;
   UARTComponent remote,a,b;
   GPIOPin remote_action, remote_awake, a_action,b_action,a_awake,b_awake;
   Fixture() {
@@ -110,6 +120,31 @@ int main() {
     tick(f.bridge,10);
     assert(shown(f.remote)!=505); // first wake press is not a fault
     assert(f.a_action.level && f.b_action.level);
+  }
+  {
+    Fixture f;
+    height(f.a,299); height(f.b,297); tick(f.bridge);
+    blank(f.a); blank(f.b); tick(f.bridge,400);
+    assert(f.a_action.level && f.b_action.level); // stale heights start wake, not correction
+    for (const auto *u : {&f.a,&f.b})
+      for (const auto &frame : u->tx) assert(frame[2]!=0x40); // no blind DOWN
+  }
+  {
+    Fixture f;
+    height(f.a,299); height(f.b,297); tick(f.bridge);
+    height(f.a,299); height(f.b,297); tick(f.bridge,400);
+    assert(f.a_action.level && !f.b_action.level); // higher box only
+    for (int i=0;i<18;i++) tick(f.bridge,10);
+    assert(f.a_action.level); // long correction remains bounded at 190 ms
+    tick(f.bridge,10);
+    assert(!f.a_action.level && !f.b_action.level);
+  }
+  {
+    Fixture f;
+    f.pair(285); f.bridge.simulate_failed_alignment();
+    height(f.a,285); height(f.b,285); tick(f.bridge,900);
+    f.bridge.arm();
+    assert(f.bridge.recovered_alignment_cleared());
   }
   std::cout << "jsdrive2 host bridge tests passed\n";
 }

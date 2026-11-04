@@ -55,7 +55,9 @@ are pending. Simultaneous button masks are never sent to either box.
 A 0.5 height split, link loss, transaction timeout, or invalid travel state
 lowers both action outputs, reports the reason, displays SOS on the handset,
 and disarms the bridge where continued movement would be unsafe. Small stopped
-offsets are corrected by bounded one-sided DOWN pulses to the higher box.
+offsets are corrected by bounded one-sided DOWN taps to the higher box only
+after both boxes supply fresh heights. Re-arming requires both box links to be
+healthy and settled, and resets the correction attempt counter.
 
 GPIO48 is a 3.3 V logic output into the SN74AHCT125N. The example wiring uses
 pin 1 (`1OE`) to ground, GPIO48 to pin 2 (`1A`), and pin 3 (`1Y`) to handset

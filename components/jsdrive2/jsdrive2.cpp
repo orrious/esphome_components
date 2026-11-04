@@ -159,7 +159,9 @@ void JSDrive2::poll_action_watchdog_(uint32_t now) {
     if (!box->action) continue;
     const bool wake_pulse=(box->wake==WakeState::ASSERT || box->wake==WakeState::HOLD) &&
                           now-box->wake_started<=25;
-    const bool align_pulse=align_==AlignState::PULSE && now-align_started_<=55;
+    const bool align_pulse=align_==AlignState::PULSE &&
+                           now-align_started_<=uint32_t(align_duration_)+10 &&
+                           now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
     const bool handset=armed_ && remote_action_ && remote_button_down_ &&
                        now-remote_last_frame_<=ACTION_WATCHDOG_MS &&
                        now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
@@ -173,7 +175,8 @@ void JSDrive2::poll_action_watchdog_(uint32_t now) {
     }
     if (!(wake_pulse || align_pulse || handset || bridge)) {
       set_box_action_(*box,false);
-      if (motion_!=MotionState::IDLE) fail_("action watchdog expired");
+      if (align_==AlignState::PULSE) fail_("alignment command watchdog expired");
+      else if (motion_!=MotionState::IDLE) fail_("action watchdog expired");
       else ESP_LOGW(TAG,"Action watchdog released box %s",box->name);
     }
   }
@@ -540,6 +543,7 @@ void JSDrive2::fail_(const std::string &reason, bool disarm, bool show_sos) {
   for (Box *box : {&box_a_,&box_b_})
     if (box->wake==WakeState::ASSERT || box->wake==WakeState::HOLD) box->wake=WakeState::FAILED;
   motion_=MotionState::IDLE; align_=AlignState::IDLE; clear_preset_();
+  align_wake_attempted_=false;
   target_height_=NAN; direction_=0;
   fault_=reason; if (disarm) armed_=false;
   if (show_sos) { sos_=true; sos_until_=millis()+3000; error_="SOS: "+reason; }
@@ -598,7 +602,10 @@ bool JSDrive2::save_preset(uint8_t preset) {
 }
 
 void JSDrive2::stop(const char *reason) { fail_(reason,false,false); }
-void JSDrive2::arm() { armed_=true; fault_="none"; publish_(); }
+void JSDrive2::arm() {
+  if (armed_) return;
+  if (!recover_()) ESP_LOGW(TAG,"Arm refused until both boxes are healthy and settled");
+}
 void JSDrive2::disarm() { stop("disarmed"); armed_=false; publish_(); }
 
 bool JSDrive2::recover_() {
@@ -613,6 +620,7 @@ bool JSDrive2::recover_() {
   }
   set_actions_(false,false); sos_=false; sos_until_=0;
   armed_=true; fault_="none";
+  align_attempts_=0; align_high_box_=0xFF; align_wake_attempted_=false;
   ESP_LOGI(TAG,"Recovered by held UP+DOWN; boxes %.1f and %.1f",
            box_a_.last_good,box_b_.last_good);
   publish_(); return true;
@@ -693,8 +701,11 @@ void JSDrive2::poll_alignment_() {
   }
   if (align_==AlignState::PULSE) {
     Box &higher=align_high_box_==0?box_a_:box_b_;
+    Box &lower=align_high_box_==0?box_b_:box_a_;
     if (!box_a_.awake || !box_b_.awake) { fail_("box slept during correction pulse"); return; }
-    if (remote_action_ || remote_button_down_ || now-align_started_>=align_duration_) {
+    const bool reached_lower=fresh_height_(higher,now) && fresh_height_(lower,now) &&
+                             tenths(higher.live_height)<=tenths(lower.live_height);
+    if (remote_action_ || remote_button_down_ || reached_lower || now-align_started_>=align_duration_) {
       set_box_action_(higher,false); send_box_(higher,CMD_IDLE);
       align_=AlignState::SETTLE; align_started_=now;
     } else if (now-higher.last_nonidle_tx>=STREAM_MS) send_box_(higher,CMD_DOWN);
@@ -713,9 +724,23 @@ void JSDrive2::poll_alignment_() {
   if (d==0) {
     if (align_!=AlignState::IDLE) ESP_LOGI(TAG,"Boxes aligned at %.1f",box_a_.last_good);
     align_=AlignState::IDLE; align_attempts_=0; align_high_box_=0xFF;
+    align_wake_attempted_=false;
     update_confirmed_(); return;
   }
   if (abs(d)>=tenths(hard_skew_)) { fail_("stopped boxes exceed hard skew"); return; }
+  if (!fresh_height_(box_a_,now) || !fresh_height_(box_b_,now)) {
+    if (!align_wake_attempted_) {
+      align_wake_attempted_=true; align_wake_started_=now;
+      for (Box *box : {&box_a_,&box_b_}) {
+        if (box->wake==WakeState::FAILED) box->wake=WakeState::IDLE;
+        if (!fresh_height_(*box,now)) start_wake_(*box);
+      }
+      ESP_LOGI(TAG,"Alignment needs fresh heights; waking stale box sessions");
+    } else if (now-align_wake_started_>2000) {
+      fail_("alignment could not obtain fresh box heights");
+    }
+    return;
+  }
   if (now-box_a_.last_change<400 || now-box_b_.last_change<400) return;
   const uint8_t high=d>0?0:1;
   if (align_high_box_!=0xFF && align_high_box_!=high) {
@@ -723,7 +748,9 @@ void JSDrive2::poll_alignment_() {
   }
   if (align_attempts_>=3) { fail_("three alignment pulses did not synchronize boxes"); return; }
   Box &higher=high==0?box_a_:box_b_;
-  align_duration_=align_attempts_==0?20:align_attempts_==1?35:50;
+  // A 190 ms hold is the shortest tap exercised by the bridge's target
+  // positioning path. Stop sooner if the higher box reports the lower height.
+  align_duration_=190;
   align_high_box_=high; align_attempts_++;
   align_=AlignState::PULSE; align_started_=now;
   set_box_action_(higher,true); send_box_(higher,CMD_DOWN);
