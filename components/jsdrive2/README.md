@@ -12,6 +12,9 @@ The complete, tested-shape configuration is in
 [`wp-cb01-dual.yaml`](../../wp-cb01-dual.yaml). It uses three 9600 8N1 UARTs,
 two box action outputs, two box awake inputs, the handset action input, and the
 handset awake output.
+The example uses this installed board's fixed hostname,
+`wp-cb01-dual-2ecf50`, so ESPHome Device Builder can track it. Replace the
+literal name if you build another bridge.
 
 ## Home Assistant interface
 

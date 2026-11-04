@@ -1,11 +1,10 @@
 substitutions:
-  device_name: wp-cb01-dual
+  device_name: wp-cb01-dual-2ecf50
   friendly_name: WP-CB01 Dual Desk
 
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
-  name_add_mac_suffix: true
 
 esp32:
   board: esp32-s3-devkitc-1
