@@ -122,6 +122,13 @@ void JSDrive2::send_both_(const uint8_t frame[5], bool action) {
       motion_=MotionState::IDLE; fail_("box UART did not drain before action"); return;
     }
   }
+  if (rising) {
+    // A and B report their heights independently. Start a new comparison
+    // window at the common action edge so a new report from one box is never
+    // compared with the other box's pre-command value.
+    skew_sequence_a_=box_a_.height_sequence;
+    skew_sequence_b_=box_b_.height_sequence;
+  }
   set_actions_(action,action); send_box_(box_a_,frame); send_box_(box_b_,frame);
   set_bridge_command_(action?frame[2]:0);
   last_command_tx_=millis();
@@ -451,6 +458,7 @@ void JSDrive2::handle_box_(Box &box, const uint8_t f[5]) {
   const auto prior_glyph=box.glyph;
   box.seen=true; box.last_frame=now; box.glyph={{f[1],f[2],f[3]}};
   if (!std::isnan(h)) {
+    box.height_sequence++;
     box.display=DisplayState::HEIGHT;
     if (motion_==MotionState::PRESET) handle_preset_height_(box,h,now);
     else {
@@ -480,10 +488,20 @@ void JSDrive2::handle_box_(Box &box, const uint8_t f[5]) {
     fail_("control box reported E04"); return;
   }
   update_confirmed_();
-  if ((motion_!=MotionState::IDLE || box_a_.action || box_b_.action) &&
-      motion_!=MotionState::PRESET && !override_align_ && wake_ready_() &&
-      !std::isnan(box_a_.live_height) && !std::isnan(box_b_.live_height) &&
-      fabsf(box_a_.live_height-box_b_.live_height)+0.001f>=hard_skew_) fail_("box height difference reached hard limit");
+  // The UARTs are asynchronous. During a two-box command, assess skew only
+  // after both boxes have produced a new numeric report. Comparing one new
+  // value with the peer's preceding value produces false SnC faults during
+  // otherwise synchronized travel.
+  if (box_a_.action && box_b_.action && motion_!=MotionState::PRESET &&
+      !override_align_ && wake_ready_() &&
+      box_a_.height_sequence>skew_sequence_a_ &&
+      box_b_.height_sequence>skew_sequence_b_) {
+    skew_sequence_a_=box_a_.height_sequence;
+    skew_sequence_b_=box_b_.height_sequence;
+    if (!std::isnan(box_a_.live_height) && !std::isnan(box_b_.live_height) &&
+        fabsf(box_a_.live_height-box_b_.live_height)+0.001f>=hard_skew_)
+      fail_("paired box height difference reached hard limit");
+  }
 }
 
 void JSDrive2::start_preset_(uint8_t preset, bool from_handset) {

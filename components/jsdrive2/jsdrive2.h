@@ -120,6 +120,7 @@ class JSDrive2 : public Component {
     uint32_t sleep_low_since{0}, wake_started{0}, last_nonidle_tx{0};
     bool wake_attempted{false}; WakeState wake{WakeState::IDLE};
     float live_height{NAN}, last_good{NAN}; DisplayState display{DisplayState::UNKNOWN};
+    uint32_t height_sequence{0};
     std::array<uint8_t, 3> glyph{{0,0,0}};
   };
 
@@ -136,6 +137,7 @@ class JSDrive2 : public Component {
   uint32_t align_wake_started_{0}; bool align_wake_attempted_{false};
   uint8_t align_high_box_{0xFF}; uint8_t align_duration_{0};
   bool override_align_{false}; uint32_t override_started_{0};
+  uint32_t skew_sequence_a_{0}, skew_sequence_b_{0};
   uint32_t override_last_progress_{0}; int16_t override_high_last_{0};
   uint16_t align_lower_before_{0};
   uint32_t recovery_started_{0}, recovery_last_attempt_{0}, last_auto_wake_{0}; bool recovery_attempted_{false};

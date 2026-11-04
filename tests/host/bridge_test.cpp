@@ -133,11 +133,26 @@ int main() {
     f.pair(285); command(f.remote,0); tick(f.bridge,10);
     f.remote_action.level=true; command(f.remote,0x20); tick(f.bridge,10);
     height(f.a,290); tick(f.bridge,10);
-    assert(!f.a_action.level && !f.b_action.level); // 0.5 split stops both sides
+    assert(f.a_action.level && f.b_action.level); // wait for B's corresponding report
+    height(f.b,285); tick(f.bridge,10);
+    assert(!f.a_action.level && !f.b_action.level); // paired 0.5 split stops both sides
     assert(shows_snc(f.remote));
     f.remote_action.level=false; command(f.remote,0); tick(f.bridge,10);
     f.remote_action.level=true; command(f.remote,0x40); tick(f.bridge,10);
     assert(f.a_action.level && !f.b_action.level); // held DOWN lowers only higher A
+  }
+  {
+    Fixture f;
+    f.pair(285); command(f.remote,0); tick(f.bridge,10);
+    f.remote_action.level=true; command(f.remote,0x20); tick(f.bridge,10);
+    // A can report several tenths before B's UART is serviced. Once B reports
+    // its matching position, this is synchronized travel rather than SnC.
+    height(f.a,286); tick(f.bridge,10);
+    height(f.a,287); tick(f.bridge,10);
+    height(f.b,287); tick(f.bridge,10);
+    assert(f.bridge.armed_for_test());
+    assert(f.a_action.level && f.b_action.level);
+    assert(!shows_snc(f.remote));
   }
   {
     Fixture f;
