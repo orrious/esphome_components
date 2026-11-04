@@ -403,16 +403,18 @@ void JSDrive2::handle_box_(Box &box, const uint8_t f[5]) {
       box.last_good=h;
     }
   } else if (f[1]==0 && f[2]==0 && f[3]==0) {
-    box.display=DisplayState::BLANK; if (motion_!=MotionState::PRESET) box.live_height=NAN;
+    // A single blank frame can occur between numeric reports. Keep the last
+    // numeric value until last_height exceeds LIVE_MS; do not stop motion on
+    // one display frame.
+    box.display=DisplayState::BLANK;
     if (preset_phase_==PresetPhase::WAIT_MOTION &&
         box_a_.display==DisplayState::BLANK && box_b_.display==DisplayState::BLANK)
       preset_announcement_visible_=false;
   } else if (f[1]==0x6D && (f[2]==0x40 || f[2]==0) && f[3]==0) {
-    box.display=DisplayState::MEMORY; if (motion_!=MotionState::PRESET) box.live_height=NAN;
+    box.display=DisplayState::MEMORY;
   } else {
     // E04 is E,0,4. Keep unknown glyphs visible rather than discarding them.
     box.display=(digit(f[2])==0 && digit(f[3])==4) ? DisplayState::ERROR : DisplayState::OTHER;
-    if (motion_!=MotionState::PRESET) box.live_height=NAN;
     if (box.display==DisplayState::ERROR) error_="E04";
   }
   if (prior!=box.display || prior_glyph!=box.glyph)
@@ -647,7 +649,9 @@ bool JSDrive2::recall_preset(uint8_t preset) {
   // A controller accepted an HA preset while the other stayed put. An idle
   // frame cannot cancel the resulting autonomous travel, so this operation
   // remains unavailable until a verified dual-box stop exists.
-  ESP_LOGW(TAG,"HA preset recall disabled: independent box travel is unsafe");
+  fault_="HA preset recall disabled: independent box travel is unsafe";
+  ESP_LOGW(TAG,"%s",fault_.c_str());
+  publish_();
   return false;
 }
 

@@ -20,6 +20,8 @@ struct ProbeBridge : JSDrive2 {
   bool recovered_alignment_cleared() const {
     return armed_ && !override_align_ && align_attempts_==0;
   }
+  bool armed_for_test() const { return armed_; }
+  const std::string &fault_for_test() const { return fault_; }
 };
 
 static constexpr uint8_t seg[] = {0x3F,0x06,0x5B,0x4F,0x66,0x6D,0x7D,0x07,0x7F,0x6F};
@@ -82,6 +84,20 @@ int main() {
     f.pair(285);
     assert(f.bridge.request_height(30.0f)); tick(f.bridge,10);
     assert(f.activity.state=="UP" && f.up.state); // same activity as handset UP
+  }
+  {
+    Fixture f;
+    f.pair(285);
+    assert(f.bridge.request_height(30.0f)); tick(f.bridge,10);
+    assert(f.a_action.level && f.b_action.level);
+    blank(f.a); blank(f.b); tick(f.bridge,10);
+    assert(f.bridge.armed_for_test());
+    assert(f.a_action.level && f.b_action.level); // one blank frame is tolerated
+    for (int i=0;i<16;i++) {
+      blank(f.a); blank(f.b); tick(f.bridge,10);
+    }
+    assert(!f.bridge.armed_for_test());
+    assert(!f.a_action.level && !f.b_action.level); // sustained missing heights stop motion
   }
   {
     Fixture f;
@@ -181,6 +197,7 @@ int main() {
     Fixture f;
     f.pair(285); blank(f.a); blank(f.b); tick(f.bridge,10);
     assert(!f.bridge.recall_preset(3));
+    assert(f.bridge.fault_for_test()=="HA preset recall disabled: independent box travel is unsafe");
     for (const auto *u : {&f.a,&f.b})
       for (const auto &frame : u->tx) assert(frame[2]!=0x08);
     assert(!f.a_action.level && !f.b_action.level);
