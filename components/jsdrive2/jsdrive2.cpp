@@ -307,7 +307,13 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
     }
     if (changed) {
       ESP_LOGW(TAG,"Handset command 0x%02X waiting for synchronized heights",command);
-      if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now)) {
+      // A first arrow press may only wake sleeping boxes. Its missing live
+      // height is expected until the bounded wake handshake completes.
+      // Report SOS only for an unavailable link when no wake is in progress.
+      const bool waking=manual && (box_a_.wake==WakeState::ASSERT || box_a_.wake==WakeState::HOLD ||
+                                   box_a_.wake==WakeState::WAIT_HEIGHT || box_b_.wake==WakeState::ASSERT ||
+                                   box_b_.wake==WakeState::HOLD || box_b_.wake==WakeState::WAIT_HEIGHT);
+      if (!waking && (!box_ready_(box_a_,now) || !box_ready_(box_b_,now))) {
         sos_=true; sos_until_=now+3000; error_="SOS: box link unavailable";
       }
     }
@@ -332,6 +338,7 @@ std::string JSDrive2::display_text_(const Box &b) const {
 
 void JSDrive2::handle_box_(Box &box, const uint8_t f[5]) {
   uint32_t now=millis(); float h=decode_height(f); DisplayState prior=box.display;
+  const auto prior_glyph=box.glyph;
   box.seen=true; box.last_frame=now; box.glyph={{f[1],f[2],f[3]}};
   if (!std::isnan(h)) {
     box.display=DisplayState::HEIGHT;
@@ -354,7 +361,8 @@ void JSDrive2::handle_box_(Box &box, const uint8_t f[5]) {
     if (motion_!=MotionState::PRESET) box.live_height=NAN;
     if (box.display==DisplayState::ERROR) error_="E04";
   }
-  if (prior!=box.display || !std::isnan(h)) ESP_LOGD(TAG,"Box %s: %s",box.name,display_text_(box).c_str());
+  if (prior!=box.display || prior_glyph!=box.glyph)
+    ESP_LOGD(TAG,"Box %s: %s",box.name,display_text_(box).c_str());
   if (box.display==DisplayState::ERROR &&
       (motion_!=MotionState::IDLE || box_a_.action || box_b_.action)) {
     fail_("control box reported E04"); return;

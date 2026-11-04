@@ -103,5 +103,13 @@ int main() {
     assert(f.a_action.level && !f.b_action.level); // wake only the sleeping box
     tick(f.bridge,22); assert(!f.a_action.level && !f.b_action.level);
   }
+  {
+    Fixture f;
+    f.a_awake.level=false; f.b_awake.level=false;
+    f.remote_action.level=true; command(f.remote,0x20); tick(f.bridge,10);
+    tick(f.bridge,10);
+    assert(shown(f.remote)!=505); // first wake press is not a fault
+    assert(f.a_action.level && f.b_action.level);
+  }
   std::cout << "jsdrive2 host bridge tests passed\n";
 }

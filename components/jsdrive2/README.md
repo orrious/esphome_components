@@ -46,7 +46,8 @@ Each box has its own bounded wake attempt. The bridge keeps an independent
 10 ms idle stream to each box and a synthesized status stream to the handset.
 The handset display blanks when both box displays time out. Active pin 5 outputs
 have a 30 ms command watchdog, and a lost UART link or awake signal lowers
-the outputs. Simultaneous button masks are never sent to either box.
+the outputs. A normal first-button wake does not show SOS while fresh heights
+are pending. Simultaneous button masks are never sent to either box.
 
 A 0.5 height split, link loss, transaction timeout, or invalid travel state
 lowers both action outputs, reports the reason, displays SOS on the handset,
