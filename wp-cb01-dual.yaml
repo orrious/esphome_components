@@ -33,7 +33,7 @@ external_components:
       type: git
       url: https://github.com/orrious/esphome_components
       # Pinned to the tested jsdrive2 version for the next OTA update.
-      ref: 1aac13b4e91a4d1e58e1c7bbb3a4d371422068e9
+      ref: 75abca05f03de6b76a4888c4cdf683738d2dedf0
     components: [jsdrive2]
 
 # All three WP-CB01 links are 9600 baud, 8 data bits, no parity, 1 stop bit.
