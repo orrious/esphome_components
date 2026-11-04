@@ -165,6 +165,11 @@ int main() {
     height(f.a,439); command(f.remote,0x04); tick(f.bridge,10);
     height(f.a,438); height(f.b,438); command(f.remote,0x04); tick(f.bridge,10);
     assert(shown(f.remote)==438); // skipped intermediate tenth pairs at next common report
+    height(f.a,430); command(f.remote,0x04); tick(f.bridge,10);
+    assert(f.bridge.armed_for_test()); // transient preset report skew is tolerated
+    assert(!shows_snc(f.remote));
+    height(f.b,430); command(f.remote,0x04); tick(f.bridge,10);
+    assert(shown(f.remote)==430);
   }
   {
     Fixture f;
@@ -176,6 +181,7 @@ int main() {
     Fixture f;
     f.a_awake.level=false; tick(f.bridge,1); tick(f.bridge,60);
     assert(f.a_action.level && !f.b_action.level); // wake only the sleeping box
+    assert(!f.a.tx.empty() && f.a.tx.back()[2]==0x00); // wake never sends motion
     tick(f.bridge,22); assert(!f.a_action.level && !f.b_action.level);
   }
   {

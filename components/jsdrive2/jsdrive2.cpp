@@ -148,7 +148,9 @@ void JSDrive2::start_wake_(Box &box) {
 
 void JSDrive2::poll_wake_(Box &box, uint32_t now) {
   if (box.wake==WakeState::ASSERT && now-box.wake_started>=10) {
-    send_box_(box,CMD_UP); box.wake=WakeState::HOLD;
+    // Pin 5 is the wake/dead-man signal. Pair it with the no-button frame so
+    // waking a single box cannot move that side of the desk.
+    send_box_(box,CMD_IDLE); box.wake=WakeState::HOLD;
   }
   if (box.wake==WakeState::HOLD && now-box.wake_started>=21) {
     set_box_action_(box,false); send_box_(box,CMD_IDLE);
@@ -523,15 +525,9 @@ void JSDrive2::handle_preset_height_(Box &box, float height, uint32_t now) {
   HeightQueue &queue=(&box==&box_a_)?preset_queue_a_:preset_queue_b_;
   if (!std::isnan(raw) && tenths(raw)==tenths(height)) return;
   raw=height;
-  if (preset_phase_==PresetPhase::MOVING && !std::isnan(preset_raw_a_) &&
-      !std::isnan(preset_raw_b_) &&
-      abs(tenths(preset_raw_a_)-tenths(preset_raw_b_))>=tenths(hard_skew_)) {
-    box_a_.live_height=box_a_.last_good=preset_raw_a_;
-    box_b_.live_height=box_b_.last_good=preset_raw_b_;
-    box_a_.last_height=box_b_.last_height=now;
-    sync_required_=true;
-    fail_("preset physical heights exceeded hard skew"); return;
-  }
+  // Preset motion is autonomous inside each control box. Their UART reports
+  // are not simultaneous, so transient skew here is not a reliable physical
+  // fault. Collect both streams and reconcile after travel settles.
   if (queue.count==HeightQueue::CAPACITY) {
     for (uint8_t i=1;i<queue.count;i++) { queue.values[i-1]=queue.values[i]; queue.times[i-1]=queue.times[i]; }
     queue.count--;
