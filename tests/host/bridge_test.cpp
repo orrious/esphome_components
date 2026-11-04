@@ -21,7 +21,6 @@ struct ProbeBridge : JSDrive2 {
     return armed_ && !override_align_ && align_attempts_==0;
   }
   bool armed_for_test() const { return armed_; }
-  const std::string &fault_for_test() const { return fault_; }
 };
 
 static constexpr uint8_t seg[] = {0x3F,0x06,0x5B,0x4F,0x66,0x6D,0x7D,0x07,0x7F,0x6F};
@@ -195,12 +194,31 @@ int main() {
   }
   {
     Fixture f;
-    f.pair(285); blank(f.a); blank(f.b); tick(f.bridge,10);
-    assert(!f.bridge.recall_preset(3));
-    assert(f.bridge.fault_for_test()=="HA preset recall disabled: independent box travel is unsafe");
+    f.pair(285); tick(f.bridge,400); f.pair(285);
+    assert(f.bridge.recall_preset(3));
+    tick(f.bridge,10);
+    assert(f.a_action.level && f.b_action.level);
+    assert(f.a.tx.back()[2]==0x08 && f.b.tx.back()[2]==0x08);
+    assert(f.activity.state=="PRESET 3");
+    height(f.a,440); height(f.b,440); tick(f.bridge,10);
+    assert(shown(f.remote)==440); // matching destination reaches handset
+  }
+  {
+    Fixture f;
+    f.pair(285); command(f.remote,0); tick(f.bridge,10);
+    f.remote_action.level=true; command(f.remote,0x08); tick(f.bridge,10);
+    assert(f.a_action.level && f.b_action.level);
+    assert(f.a.tx.back()[2]==0x08 && f.b.tx.back()[2]==0x08);
+  }
+  {
+    Fixture f;
+    f.pair(285); tick(f.bridge,400); f.pair(285);
+    f.a_awake.level=false; tick(f.bridge,10);
+    assert(f.bridge.recall_preset(3));
+    tick(f.bridge,10);
     for (const auto *u : {&f.a,&f.b})
       for (const auto &frame : u->tx) assert(frame[2]!=0x08);
-    assert(!f.a_action.level && !f.b_action.level);
+    assert(!f.b_action.level); // no preset sent to either box while A is asleep
   }
   {
     Fixture f;

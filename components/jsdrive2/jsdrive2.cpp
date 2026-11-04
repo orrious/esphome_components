@@ -375,7 +375,11 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
     return;
   }
   if (preset && changed) start_preset_(command==0x02?1:command==0x04?2:command==0x08?3:4,true);
-  send_both_(f,true); remote_button_down_=true; remote_command_=command;
+  // Both handset and HA preset requests use the same on-wire command frame.
+  // The handset controls release timing through its action pin; HA synthesizes
+  // that press in poll_preset_.
+  send_both_(preset?command_frame_(command):f,true);
+  remote_button_down_=true; remote_command_=command;
 }
 
 std::string JSDrive2::display_text_(const Box &b) const {
@@ -645,14 +649,20 @@ bool JSDrive2::request_height(float height) {
 }
 
 bool JSDrive2::recall_preset(uint8_t preset) {
-  (void) preset;
-  // A controller accepted an HA preset while the other stayed put. An idle
-  // frame cannot cancel the resulting autonomous travel, so this operation
-  // remains unavailable until a verified dual-box stop exists.
-  fault_="HA preset recall disabled: independent box travel is unsafe";
-  ESP_LOGW(TAG,"%s",fault_.c_str());
-  publish_();
-  return false;
+  if (preset<1 || preset>4 || !armed_ || motion_!=MotionState::IDLE ||
+      remote_button_down_ || remote_action_ || align_!=AlignState::IDLE) return false;
+  const uint32_t now=millis();
+  pending_preset_=preset; motion_=MotionState::DISCOVER_WAIT;
+  motion_started_=phase_started_=now;
+  // A handset press can only reach the boxes once both box sessions are
+  // awake. HA uses that same preset frame and action sequence after wake.
+  for (Box *box : {&box_a_,&box_b_}) {
+    if (box->wake==WakeState::FAILED) box->wake=WakeState::IDLE;
+    if (!fresh_height_(*box,now) || box->display==DisplayState::BLANK)
+      start_wake_(*box);
+  }
+  ESP_LOGI(TAG,"Recall preset %u: waiting for fresh settled box heights",preset);
+  return true;
 }
 
 bool JSDrive2::save_preset(uint8_t preset) {
