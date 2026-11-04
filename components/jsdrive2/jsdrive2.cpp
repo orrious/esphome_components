@@ -161,6 +161,9 @@ void JSDrive2::poll_action_watchdog_(uint32_t now) {
     // before the watchdog intervenes; this board has observed 35 ms loop gaps.
     const bool wake_pulse=(box->wake==WakeState::ASSERT || box->wake==WakeState::HOLD) &&
                           now-box->wake_started<=60;
+    const bool preset_lead=motion_==MotionState::PRESET &&
+                           preset_phase_==PresetPhase::BUTTON_LEAD &&
+                           now-phase_started_<=60;
     const bool align_pulse=align_==AlignState::PULSE &&
                            now-align_started_<=uint32_t(align_duration_)+10 &&
                            now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
@@ -175,7 +178,7 @@ void JSDrive2::poll_action_watchdog_(uint32_t now) {
       fail_("box slept while action output was high");
       return;
     }
-    if (!(wake_pulse || align_pulse || handset || bridge)) {
+    if (!(wake_pulse || preset_lead || align_pulse || handset || bridge)) {
       set_box_action_(*box,false);
       if (align_==AlignState::PULSE) fail_("alignment command watchdog expired");
       else if (motion_!=MotionState::IDLE) fail_("action watchdog expired");
@@ -227,6 +230,22 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
     recovery_started_=0; recovery_attempted_=false;
     return;
   }
+  // Recovery is a command from the handset UART, not a motion command. Some
+  // handsets drop the separate action line when two keys are held together.
+  if (command==0x60) {
+    if (motion_==MotionState::COARSE || motion_==MotionState::FINE_PULSE ||
+        motion_==MotionState::FINE_SETTLE || motion_==MotionState::DISCOVER_WAIT)
+      stop("simultaneous handset buttons took control");
+    set_actions_(false,false); send_both_(CMD_IDLE,false);
+    if (!armed_) {
+      if (recovery_started_==0) recovery_started_=now;
+      if (!recovery_attempted_ && now-recovery_started_>=500) {
+        recovery_attempted_=true; recover_();
+      }
+    }
+    remote_button_down_=true; remote_command_=command;
+    return;
+  }
   if (!physical) {
     if (remote_button_down_) set_actions_(false,false);
     remote_button_down_=false;
@@ -240,12 +259,7 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
       stop("simultaneous handset buttons took control");
     set_actions_(false,false); send_both_(CMD_IDLE,false);
     remote_button_down_=true; remote_command_=command;
-    if (command==0x60 && !armed_) {
-      if (recovery_started_==0) recovery_started_=now;
-      if (!recovery_attempted_ && now-recovery_started_>=500) {
-        recovery_attempted_=true; recover_();
-      }
-    } else { recovery_started_=0; recovery_attempted_=false; }
+    recovery_started_=0; recovery_attempted_=false;
     return;
   }
   recovery_started_=0; recovery_attempted_=false;
@@ -471,6 +485,15 @@ void JSDrive2::handle_preset_height_(Box &box, float height, uint32_t now) {
 }
 
 void JSDrive2::poll_preset_(uint32_t now) {
+  if (preset_phase_==PresetPhase::BUTTON_LEAD) {
+    if (!live_equal_()) { fail_("preset lost fresh matching heights before command"); return; }
+    if (now-phase_started_>=10) {
+      preset_phase_=PresetPhase::ANNOUNCEMENT; phase_started_=now;
+      send_both_(CMD_PRESET[active_preset_-1],true);
+      ESP_LOGI(TAG,"Recall preset %u: pin 5 lead complete, command sent",active_preset_);
+    }
+    return;
+  }
   if (preset_from_handset_ && (!remote_seen_ || now-remote_last_frame_>LINK_MS)) {
     fail_("handset link lost during preset travel"); return;
   }
@@ -546,7 +569,7 @@ void JSDrive2::fail_(const std::string &reason, bool disarm, bool show_sos) {
     if (box->wake==WakeState::ASSERT || box->wake==WakeState::HOLD) box->wake=WakeState::FAILED;
   motion_=MotionState::IDLE; align_=AlignState::IDLE; clear_preset_();
   align_wake_attempted_=false;
-  target_height_=NAN; direction_=0;
+  target_height_=NAN; direction_=0; pending_preset_=0;
   fault_=reason; if (disarm) armed_=false;
   if (show_sos) { sos_=true; sos_until_=millis()+3000; error_="SOS: "+reason; }
   ESP_LOGE(TAG,"Stopped: %s%s",reason.c_str(),disarm?"; bridge disarmed":""); publish_();
@@ -555,7 +578,7 @@ void JSDrive2::fail_(const std::string &reason, bool disarm, bool show_sos) {
 void JSDrive2::finish_motion_(const char *reason) {
   set_actions_(false,false); send_box_(box_a_,CMD_IDLE); send_box_(box_b_,CMD_IDLE);
   motion_=MotionState::IDLE; clear_preset_();
-  target_height_=NAN; direction_=0; fine_taps_=0;
+  target_height_=NAN; direction_=0; fine_taps_=0; pending_preset_=0;
   ESP_LOGI(TAG,"%s",reason); update_confirmed_(); publish_();
 }
 
@@ -563,7 +586,7 @@ bool JSDrive2::discover_height() {
   if (!armed_ || motion_!=MotionState::IDLE || remote_button_down_ || align_!=AlignState::IDLE) return false;
   const uint32_t now=millis();
   if (fresh_height_(box_a_,now) && fresh_height_(box_b_,now) && trusted_equal_()) return true;
-  motion_=MotionState::DISCOVER_WAIT; motion_started_=phase_started_=now;
+  pending_preset_=0; motion_=MotionState::DISCOVER_WAIT; motion_started_=phase_started_=now;
   for (Box *box : {&box_a_,&box_b_}) {
     if (box->wake==WakeState::FAILED) box->wake=WakeState::IDLE;
     if (!fresh_height_(*box,now)) start_wake_(*box);
@@ -575,7 +598,7 @@ bool JSDrive2::request_height(float height) {
   height=roundf(height*10.0f)/10.0f;
   if (height<min_height_ || height>max_height_) { fault_="target outside configured range"; publish_(); return false; }
   if (!armed_ || motion_!=MotionState::IDLE || remote_button_down_ || align_!=AlignState::IDLE) return false;
-  target_height_=height; fine_taps_=0; motion_started_=millis();
+  pending_preset_=0; target_height_=height; fine_taps_=0; motion_started_=millis();
   if (!movement_ready_(true) || !live_equal_()) {
     const uint32_t now=millis();
     motion_=MotionState::DISCOVER_WAIT; phase_started_=now;
@@ -592,9 +615,18 @@ bool JSDrive2::request_height(float height) {
 }
 
 bool JSDrive2::recall_preset(uint8_t preset) {
-  if (preset<1 || preset>4 || motion_!=MotionState::IDLE || !movement_ready_(true)) return false;
-  start_preset_(preset,false);
-  send_both_(CMD_PRESET[preset-1],true); ESP_LOGI(TAG,"Recall preset %u",preset); return true;
+  if (preset<1 || preset>4 || !armed_ || motion_!=MotionState::IDLE ||
+      remote_button_down_ || remote_action_) return false;
+  const uint32_t now=millis();
+  pending_preset_=preset; motion_=MotionState::DISCOVER_WAIT;
+  motion_started_=phase_started_=now;
+  for (Box *box : {&box_a_,&box_b_}) {
+    if (box->wake==WakeState::FAILED) box->wake=WakeState::IDLE;
+    if (!fresh_height_(*box,now) || box->display==DisplayState::BLANK)
+      start_wake_(*box);
+  }
+  ESP_LOGI(TAG,"Recall preset %u: waiting for fresh settled box heights",preset);
+  return true;
 }
 
 bool JSDrive2::save_preset(uint8_t preset) {
@@ -612,16 +644,20 @@ void JSDrive2::disarm() { stop("disarmed"); armed_=false; publish_(); }
 
 bool JSDrive2::recover_() {
   const uint32_t now=millis();
-  if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now) ||
+  const bool linked_a=box_a_.seen && box_a_.awake && now-box_a_.last_frame<=LINK_MS;
+  const bool linked_b=box_b_.seen && box_b_.awake && now-box_b_.last_frame<=LINK_MS;
+  if (!linked_a || !linked_b ||
       std::isnan(box_a_.last_good) || std::isnan(box_b_.last_good) ||
       now-box_a_.last_change<800 || now-box_b_.last_change<800 ||
-      motion_!=MotionState::IDLE || align_!=AlignState::IDLE || !wake_ready_() ||
+      motion_!=MotionState::IDLE || align_!=AlignState::IDLE ||
       abs(tenths(box_a_.last_good)-tenths(box_b_.last_good))>=tenths(hard_skew_)) {
     ESP_LOGW(TAG,"Recovery chord waiting for healthy, stopped boxes");
     return false;
   }
   set_actions_(false,false); sos_=false; sos_until_=0;
-  armed_=true; fault_="none";
+  if (box_a_.wake==WakeState::FAILED) box_a_.wake=WakeState::IDLE;
+  if (box_b_.wake==WakeState::FAILED) box_b_.wake=WakeState::IDLE;
+  armed_=true; fault_="none"; error_="none";
   align_attempts_=0; align_high_box_=0xFF; align_wake_attempted_=false;
   ESP_LOGI(TAG,"Recovered by held UP+DOWN; boxes %.1f and %.1f",
            box_a_.last_good,box_b_.last_good);
@@ -637,6 +673,20 @@ void JSDrive2::poll_motion_() {
   uint32_t now=millis();
   if (now-motion_started_>TARGET_TIMEOUT_MS) { fail_("45 second transaction timeout"); return; }
   if (motion_==MotionState::DISCOVER_WAIT) {
+    if (pending_preset_!=0) {
+      if (movement_ready_(false) && align_==AlignState::IDLE &&
+          now-box_a_.last_change>=400 && now-box_b_.last_change>=400 &&
+          !remote_action_) {
+        const uint8_t preset=pending_preset_; pending_preset_=0;
+        start_preset_(preset,false);
+        preset_phase_=PresetPhase::BUTTON_LEAD; phase_started_=now;
+        set_actions_(true,true);
+        ESP_LOGI(TAG,"Recall preset %u: pin 5 asserted before UART command",preset);
+      } else if (now-phase_started_>8000 && align_==AlignState::IDLE) {
+        fail_("preset could not obtain settled synchronized heights");
+      }
+      return;
+    }
     if (movement_ready_(false) && align_==AlignState::IDLE) {
       if (std::isnan(target_height_)) { finish_motion_("height discovery complete"); return; }
       int cur=tenths(confirmed_height_), target=tenths(target_height_);

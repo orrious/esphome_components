@@ -15,6 +15,15 @@ struct ProbeBridge : JSDrive2 {
   bool recovered_alignment_cleared() const {
     return armed_ && align_attempts_==0 && align_high_box_==0xFF && !align_wake_attempted_;
   }
+  bool recovered_and_rechecking() const {
+    return armed_ && align_attempts_==0 && align_high_box_==0xFF;
+  }
+  bool preparing_preset(uint8_t n) const {
+    return motion_==MotionState::DISCOVER_WAIT && pending_preset_==n;
+  }
+  bool leading_preset(uint8_t n) const {
+    return motion_==MotionState::PRESET && preset_phase_==PresetPhase::BUTTON_LEAD && active_preset_==n;
+  }
 };
 
 static constexpr uint8_t seg[] = {0x3F,0x06,0x5B,0x4F,0x66,0x6D,0x7D,0x07,0x7F,0x6F};
@@ -145,6 +154,33 @@ int main() {
     height(f.a,285); height(f.b,285); tick(f.bridge,900);
     f.bridge.arm();
     assert(f.bridge.recovered_alignment_cleared());
+  }
+  {
+    Fixture f;
+    f.pair(285); blank(f.a); blank(f.b); tick(f.bridge,10);
+    assert(f.bridge.recall_preset(3));
+    assert(f.bridge.preparing_preset(3));
+    for (const auto *u : {&f.a,&f.b})
+      for (const auto &frame : u->tx) assert(frame[2]!=0x08);
+    tick(f.bridge,22); // bounded UP wake has released pin 5
+    height(f.a,285); height(f.b,285); tick(f.bridge,400);
+    assert(f.bridge.leading_preset(3));
+    assert(f.a_action.level && f.b_action.level);
+    for (const auto *u : {&f.a,&f.b})
+      for (const auto &frame : u->tx) assert(frame[2]!=0x08);
+    tick(f.bridge,10);
+    assert(f.a.tx.back()[2]==0x08 && f.b.tx.back()[2]==0x08);
+  }
+  {
+    Fixture f;
+    height(f.a,287); height(f.b,286); tick(f.bridge);
+    f.bridge.simulate_failed_alignment();
+    blank(f.a); blank(f.b); tick(f.bridge,900);
+    // The recovery chord is valid even when the handset action line is low.
+    for (int i=0;i<7;i++) {
+      blank(f.a); blank(f.b); command(f.remote,0x60); tick(f.bridge,100);
+    }
+    assert(f.bridge.recovered_and_rechecking());
   }
   std::cout << "jsdrive2 host bridge tests passed\n";
 }
