@@ -157,8 +157,10 @@ void JSDrive2::poll_box_idle_(Box &box, uint32_t now) {
 void JSDrive2::poll_action_watchdog_(uint32_t now) {
   for (Box *box : {&box_a_,&box_b_}) {
     if (!box->action) continue;
+    // The planned pulse ends at 21 ms in poll_wake_. Allow one delayed loop
+    // before the watchdog intervenes; this board has observed 35 ms loop gaps.
     const bool wake_pulse=(box->wake==WakeState::ASSERT || box->wake==WakeState::HOLD) &&
-                          now-box->wake_started<=25;
+                          now-box->wake_started<=60;
     const bool align_pulse=align_==AlignState::PULSE &&
                            now-align_started_<=uint32_t(align_duration_)+10 &&
                            now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
