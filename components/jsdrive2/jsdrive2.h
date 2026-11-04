@@ -104,7 +104,7 @@ class JSDrive2 : public Component {
   enum class MotionState : uint8_t { IDLE, DISCOVER_WAIT, COARSE, FINE_PULSE, FINE_SETTLE, PRESET, SAVE_M, SAVE_SLOT };
   enum class WakeState : uint8_t { IDLE, ASSERT, HOLD, WAIT_HEIGHT, FAILED };
   enum class AlignState : uint8_t { IDLE, PULSE, SETTLE };
-  enum class PresetPhase : uint8_t { IDLE, BUTTON_LEAD, ANNOUNCEMENT, WAIT_MOTION, MOVING };
+  enum class PresetPhase : uint8_t { IDLE, UART_LEAD, ANNOUNCEMENT, WAIT_MOTION, MOVING };
   struct Parser { uint8_t start{0}; uint8_t data[5]{}; uint8_t length{0}; uint32_t invalid{0}; };
   struct HeightQueue {
     static constexpr uint8_t CAPACITY = 8;
