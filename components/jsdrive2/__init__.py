@@ -52,6 +52,7 @@ CONF_BOX_B_AWAKE = "box_b_awake"
 CONF_ARMED = "armed"
 CONF_MOVING = "moving"
 CONF_OPERATION = "operation"
+CONF_ACTIVITY = "activity"
 CONF_LAST_FAULT = "last_fault"
 CONF_BOX_A_DISPLAY = "box_a_display"
 CONF_BOX_B_DISPLAY = "box_b_display"
@@ -119,6 +120,7 @@ CONFIG_SCHEMA = cv.COMPONENT_SCHEMA.extend({
     cv.Optional(CONF_ARMED): binary_sensor.binary_sensor_schema(),
     cv.Optional(CONF_MOVING): binary_sensor.binary_sensor_schema(),
     cv.Optional(CONF_OPERATION): text_sensor.text_sensor_schema(),
+    cv.Optional(CONF_ACTIVITY): text_sensor.text_sensor_schema(),
     cv.Optional(CONF_LAST_FAULT): text_sensor.text_sensor_schema(),
     cv.Optional(CONF_BOX_A_DISPLAY): text_sensor.text_sensor_schema(),
     cv.Optional(CONF_BOX_B_DISPLAY): text_sensor.text_sensor_schema(),
@@ -179,7 +181,8 @@ async def to_code(config):
         if key in config:
             cg.add(getattr(var, setter)(await binary_sensor.new_binary_sensor(config[key])))
     for key, setter in (
-        (CONF_OPERATION, "set_operation_sensor"), (CONF_LAST_FAULT, "set_last_fault_sensor"),
+        (CONF_OPERATION, "set_operation_sensor"), (CONF_ACTIVITY, "set_activity_sensor"),
+        (CONF_LAST_FAULT, "set_last_fault_sensor"),
         (CONF_BOX_A_DISPLAY, "set_box_a_display_sensor"), (CONF_BOX_B_DISPLAY, "set_box_b_display_sensor"),
         (CONF_ERROR_CODE, "set_error_code_sensor"),
     ):

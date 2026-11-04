@@ -35,12 +35,27 @@ static bool valid_command(const uint8_t f[5]) {
   return f[0]==0xA5 && f[4]==0xFF && (uint8_t)(f[1]+f[2]+f[3])==0xFF;
 }
 static int tenths(float value) { return (int) lroundf(value*10.0f); }
+static const char *command_name(uint8_t command) {
+  switch (command) {
+    case 0x00: return "IDLE";
+    case 0x01: return "M";
+    case 0x02: return "PRESET 1";
+    case 0x04: return "PRESET 2";
+    case 0x08: return "PRESET 3";
+    case 0x10: return "PRESET 4";
+    case 0x20: return "UP";
+    case 0x40: return "DOWN";
+    case 0x60: return "UP+DOWN";
+    default: return "BUTTON COMBINATION";
+  }
+}
 
 void JSDrive2::setup() {
   for (GPIOPin *pin : {remote_action_pin_, remote_awake_pin_, box_a_.action_pin, box_b_.action_pin,
                        box_a_.awake_pin, box_b_.awake_pin}) if (pin != nullptr) pin->setup();
   set_actions_(false,false);
   if (remote_awake_pin_ != nullptr) remote_awake_pin_->digital_write(true);
+  if (activity_sensor_) activity_sensor_->publish_state("IDLE");
   ESP_LOGI(TAG, "Three-session WP-CB01 bridge ready; armed by default");
   publish_();
 }
@@ -69,6 +84,7 @@ void JSDrive2::poll_uart_(uart::UARTComponent *uart, Parser &parser, bool remote
 
 void JSDrive2::set_actions_(bool a, bool b) {
   set_box_action_(box_a_, a); set_box_action_(box_b_, b);
+  if (!a && !b) set_bridge_command_(0);
 }
 
 void JSDrive2::set_box_action_(Box &box, bool active) {
@@ -86,6 +102,7 @@ void JSDrive2::send_box_(Box &box, const uint8_t frame[5]) {
 
 void JSDrive2::send_both_(const uint8_t frame[5], bool action) {
   set_actions_(action,action); send_box_(box_a_,frame); send_box_(box_b_,frame);
+  set_bridge_command_(action?frame[2]:0);
   last_command_tx_=millis();
 }
 
@@ -207,12 +224,26 @@ const uint8_t *JSDrive2::command_frame_(uint8_t command) const {
 }
 
 void JSDrive2::set_handset_buttons_(uint8_t command) {
+  remote_input_command_=command;
+  publish_activity_();
+}
+
+void JSDrive2::set_bridge_command_(uint8_t command) {
+  bridge_output_command_=command;
+  publish_activity_();
+}
+
+void JSDrive2::publish_activity_() {
+  const uint8_t command=remote_input_command_?remote_input_command_:bridge_output_command_;
+  if (command==activity_command_) return;
+  activity_command_=command;
   if (up_sensor_) up_sensor_->publish_state(command&0x20);
   if (down_sensor_) down_sensor_->publish_state(command&0x40);
   if (memory1_sensor_) memory1_sensor_->publish_state(command&0x02);
   if (memory2_sensor_) memory2_sensor_->publish_state(command&0x04);
   if (memory3_sensor_) memory3_sensor_->publish_state(command&0x08);
   if (memory4_sensor_) memory4_sensor_->publish_state(command&0x10);
+  if (activity_sensor_) activity_sensor_->publish_state(command_name(command));
 }
 
 void JSDrive2::handle_remote_(const uint8_t f[5]) {
@@ -546,9 +577,9 @@ void JSDrive2::send_remote_status_() {
   if (sos_ && now<sos_until_) { f[1]=0x6D; f[2]=0x3F; f[3]=0x6D; }
   else if (box_a_.display==DisplayState::MEMORY && box_b_.display==DisplayState::MEMORY) {
     f[1]=0x6D; f[2]=((now/500)&1)?0:0x40;
-  } else if (remote_seen_ && !std::isnan(confirmed_height_) &&
-             !(motion_==MotionState::IDLE && align_==AlignState::IDLE &&
-               box_a_.display==DisplayState::BLANK && box_b_.display==DisplayState::BLANK)) {
+  } else if (!std::isnan(confirmed_height_) &&
+             (activity_command_!=0 || motion_!=MotionState::IDLE || align_!=AlignState::IDLE ||
+              box_a_.display!=DisplayState::BLANK || box_b_.display!=DisplayState::BLANK)) {
     const float shown=(preset_phase_==PresetPhase::WAIT_MOTION &&
                        preset_announcement_visible_ && !std::isnan(preset_target_))
                           ? preset_target_ : confirmed_height_;
@@ -840,7 +871,7 @@ void JSDrive2::poll_alignment_() {
 void JSDrive2::publish_() {
   uint32_t now=millis(); bool ready_a=box_ready_(box_a_,now), ready_b=box_ready_(box_b_,now), known=trusted_equal_();
   bool live=live_equal_(), sync=known && fabsf(box_a_.last_good-box_b_.last_good)<0.15f;
-  bool moving=motion_!=MotionState::IDLE;
+  bool moving=motion_!=MotionState::IDLE || box_a_.action || box_b_.action;
   if (height_a_sensor_) height_a_sensor_->publish_state(box_a_.last_good);
   if (height_b_sensor_) height_b_sensor_->publish_state(box_b_.last_good);
   if (height_difference_sensor_) height_difference_sensor_->publish_state((!std::isnan(box_a_.last_good)&&!std::isnan(box_b_.last_good))?fabsf(box_a_.last_good-box_b_.last_good):NAN);
@@ -860,7 +891,7 @@ void JSDrive2::publish_() {
   PB(box_a_connected_sensor_,ready_a); PB(box_b_connected_sensor_,ready_b); PB(box_a_awake_sensor_,box_a_.awake);
   PB(box_b_awake_sensor_,box_b_.awake); PB(armed_sensor_,armed_); PB(moving_sensor_,moving);
 #undef PB
-  const char *op=align_!=AlignState::IDLE?"aligning":motion_==MotionState::IDLE?"idle":motion_==MotionState::COARSE?"target coarse":motion_==MotionState::FINE_PULSE?"target fine pulse":motion_==MotionState::FINE_SETTLE?"target settling":motion_==MotionState::PRESET?"preset":motion_==MotionState::SAVE_M||motion_==MotionState::SAVE_SLOT?"saving preset":"discovering height";
+  const char *op=align_!=AlignState::IDLE?"aligning":motion_==MotionState::IDLE?(activity_command_?command_name(activity_command_):"idle"):motion_==MotionState::COARSE?"target coarse":motion_==MotionState::FINE_PULSE?"target fine pulse":motion_==MotionState::FINE_SETTLE?"target settling":motion_==MotionState::PRESET?"preset":motion_==MotionState::SAVE_M||motion_==MotionState::SAVE_SLOT?"saving preset":"discovering height";
   if (operation_sensor_) operation_sensor_->publish_state(op);
   if (last_fault_sensor_) last_fault_sensor_->publish_state(fault_);
   if (box_a_display_sensor_) box_a_display_sensor_->publish_state(display_text_(box_a_));

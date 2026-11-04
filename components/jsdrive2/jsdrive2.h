@@ -82,7 +82,7 @@ class JSDrive2 : public Component {
   JSD_SET_BIN(memory3) JSD_SET_BIN(memory4)
 #undef JSD_SET_BIN
 #define JSD_SET_TEXT(name) void set_##name##_sensor(text_sensor::TextSensor *v) { name##_sensor_ = v; }
-  JSD_SET_TEXT(operation) JSD_SET_TEXT(last_fault) JSD_SET_TEXT(box_a_display)
+  JSD_SET_TEXT(operation) JSD_SET_TEXT(activity) JSD_SET_TEXT(last_fault) JSD_SET_TEXT(box_a_display)
   JSD_SET_TEXT(box_b_display) JSD_SET_TEXT(error_code)
 #undef JSD_SET_TEXT
   void set_cover(JSDrive2Cover *v) { cover_ = v; }
@@ -129,6 +129,7 @@ class JSDrive2 : public Component {
   bool armed_{true}, remote_seen_{false}, remote_action_{false}, remote_button_down_{false};
   bool remote_wake_consumed_{false};
   uint8_t remote_command_{0}; uint32_t remote_last_frame_{0}, remote_last_tx_{0}, remote_tx_count_{0}, remote_tx_errors_{0}, remote_max_tx_gap_{0};
+  uint8_t remote_input_command_{0}, bridge_output_command_{0}, activity_command_{0};
   float min_height_{25.9f}, max_height_{51.5f}, hard_skew_{0.5f}, confirmed_height_{NAN};
   MotionState motion_{MotionState::IDLE}; uint32_t motion_started_{0}, phase_started_{0}, last_command_tx_{0};
   AlignState align_{AlignState::IDLE}; uint32_t align_started_{0};
@@ -158,7 +159,7 @@ class JSDrive2 : public Component {
   JSD_BIN(up) JSD_BIN(down) JSD_BIN(memory1) JSD_BIN(memory2) JSD_BIN(memory3) JSD_BIN(memory4)
 #undef JSD_BIN
 #define JSD_TEXT(name) text_sensor::TextSensor *name##_sensor_{nullptr};
-  JSD_TEXT(operation) JSD_TEXT(last_fault) JSD_TEXT(box_a_display) JSD_TEXT(box_b_display) JSD_TEXT(error_code)
+  JSD_TEXT(operation) JSD_TEXT(activity) JSD_TEXT(last_fault) JSD_TEXT(box_a_display) JSD_TEXT(box_b_display) JSD_TEXT(error_code)
 #undef JSD_TEXT
   JSDrive2Cover *cover_{nullptr};
 
@@ -202,6 +203,8 @@ class JSDrive2 : public Component {
   void publish_();
   std::string display_text_(const Box &box) const;
   void set_handset_buttons_(uint8_t command);
+  void set_bridge_command_(uint8_t command);
+  void publish_activity_();
   const uint8_t *command_frame_(uint8_t command) const;
 };
 

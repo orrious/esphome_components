@@ -6,6 +6,8 @@
 using esphome::jsdrive2::JSDrive2;
 using esphome::uart::UARTComponent;
 using esphome::GPIOPin;
+using esphome::text_sensor::TextSensor;
+using esphome::binary_sensor::BinarySensor;
 
 struct ProbeBridge : JSDrive2 {
   using JSDrive2::recover_;
@@ -44,6 +46,8 @@ struct Fixture {
   ProbeBridge bridge;
   UARTComponent remote,a,b;
   GPIOPin remote_action, remote_awake, a_action,b_action,a_awake,b_awake;
+  TextSensor activity;
+  BinarySensor up;
   Fixture() {
     esphome::test_ms=1000;
     a_awake.level=b_awake.level=true;
@@ -51,12 +55,34 @@ struct Fixture {
     bridge.set_remote_action_pin(&remote_action); bridge.set_remote_awake_pin(&remote_awake);
     bridge.set_box_a_action_pin(&a_action); bridge.set_box_b_action_pin(&b_action);
     bridge.set_box_a_awake_pin(&a_awake); bridge.set_box_b_awake_pin(&b_awake);
+    bridge.set_activity_sensor(&activity); bridge.set_up_sensor(&up);
     bridge.setup();
   }
   void pair(int n) { height(a,n); height(b,n); tick(bridge); }
 };
 
 int main() {
+  {
+    Fixture f;
+    f.pair(285);
+    f.remote_action.level=true; command(f.remote,0x20); tick(f.bridge,10);
+    assert(f.activity.state=="UP" && f.up.state);
+    f.remote_action.level=false; command(f.remote,0); tick(f.bridge,10);
+    assert(f.activity.state=="IDLE" && !f.up.state);
+  }
+  {
+    Fixture f;
+    f.pair(285); blank(f.a); blank(f.b); tick(f.bridge,10);
+    assert(f.bridge.request_height(30.0f));
+    tick(f.bridge,10);
+    assert(shown(f.remote)==285); // HA activity drives handset status without prior handset frames
+  }
+  {
+    Fixture f;
+    f.pair(285);
+    assert(f.bridge.request_height(30.0f)); tick(f.bridge,10);
+    assert(f.activity.state=="UP" && f.up.state); // same activity as handset UP
+  }
   {
     Fixture f;
     f.pair(285); command(f.remote,0); tick(f.bridge,10); tick(f.bridge,10);
