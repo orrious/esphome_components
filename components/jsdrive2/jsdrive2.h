@@ -103,7 +103,7 @@ class JSDrive2 : public Component {
   enum class DisplayState : uint8_t { UNKNOWN, BLANK, HEIGHT, MEMORY, ERROR, OTHER };
   enum class MotionState : uint8_t { IDLE, DISCOVER_WAIT, COARSE, FINE_PULSE, FINE_SETTLE, PRESET, SAVE_M, SAVE_SLOT };
   enum class WakeState : uint8_t { IDLE, ASSERT, HOLD, WAIT_HEIGHT, FAILED };
-  enum class AlignState : uint8_t { IDLE, PULSE, SETTLE, OVERRIDE_RUN };
+  enum class AlignState : uint8_t { IDLE, PULSE, SETTLE, OVERRIDE_RUN, OVERRIDE_PULSE };
   enum class PresetPhase : uint8_t { IDLE, ANNOUNCEMENT, WAIT_MOTION, MOVING };
   struct Parser { uint8_t start{0}; uint8_t data[5]{}; uint8_t length{0}; uint32_t invalid{0}; };
   struct HeightQueue {
@@ -167,6 +167,7 @@ class JSDrive2 : public Component {
 
   static constexpr uint32_t STREAM_MS = 10, LINK_MS = 500, LIVE_MS = 150, TARGET_TIMEOUT_MS = 45000;
   static constexpr uint32_t FINE_PULSE_MS = 190, FINE_SETTLE_MS = 500, PRESET_PAIR_MS = 500;
+  static constexpr uint32_t STOP_SETTLE_MS = 1200;
   // The device has observed normal loop gaps of 35 ms. Allow three such gaps,
   // rounded up, before treating a held action stream as stale.
   static constexpr uint32_t ACTION_WATCHDOG_MS = 120, SLEEP_STABLE_MS = 50, WAKE_RETRY_MS = 3000;

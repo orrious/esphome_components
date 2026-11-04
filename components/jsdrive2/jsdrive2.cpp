@@ -215,7 +215,8 @@ void JSDrive2::poll_action_watchdog_(uint32_t now) {
     const bool align_pulse=align_==AlignState::PULSE &&
                            now-align_started_<=uint32_t(align_duration_)+10 &&
                            now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
-    const bool override_run=override_align_ && align_==AlignState::OVERRIDE_RUN &&
+    const bool override_run=override_align_ &&
+                            (align_==AlignState::OVERRIDE_RUN || align_==AlignState::OVERRIDE_PULSE) &&
                             box==((align_high_box_==0)?&box_a_:&box_b_) &&
                             now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
     const bool handset=armed_ && remote_action_ && remote_button_down_ &&
@@ -233,7 +234,8 @@ void JSDrive2::poll_action_watchdog_(uint32_t now) {
     }
     if (!(wake_pulse || align_pulse || override_run || handset || bridge || preset_cancel)) {
       set_box_action_(*box,false);
-      if (align_==AlignState::PULSE || align_==AlignState::OVERRIDE_RUN)
+      if (align_==AlignState::PULSE || align_==AlignState::OVERRIDE_RUN ||
+          align_==AlignState::OVERRIDE_PULSE)
         fail_("alignment command watchdog expired");
       else if (motion_!=MotionState::IDLE) fail_("action watchdog expired");
       else ESP_LOGW(TAG,"Action watchdog released box %s",box->name);
@@ -338,7 +340,6 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
     recovery_started_=0; recovery_last_attempt_=0; recovery_attempted_=false;
     return;
   }
-  recovery_started_=0; recovery_last_attempt_=0; recovery_attempted_=false;
   const bool preset=command==0x02 || command==0x04 || command==0x08 || command==0x10;
   const bool memory=command==0x01 || preset;
   const bool manual=command==0x20 || command==0x40;
@@ -351,6 +352,7 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
     remote_button_down_=true; remote_command_=command;
     return;
   }
+  recovery_started_=0; recovery_last_attempt_=0; recovery_attempted_=false;
   if (manual && remote_wake_consumed_) {
     for (Box *box : {&box_a_,&box_b_})
       if (box->wake!=WakeState::ASSERT && box->wake!=WakeState::HOLD)
@@ -902,7 +904,8 @@ void JSDrive2::poll_alignment_() {
     if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now)) {
       fail_("box link lost during DOWN synchronization"); return;
     }
-    if (align_==AlignState::OVERRIDE_RUN || align_==AlignState::SETTLE) {
+    if (align_==AlignState::OVERRIDE_RUN || align_==AlignState::OVERRIDE_PULSE ||
+        align_==AlignState::SETTLE) {
       Box &higher=align_high_box_==0?box_a_:box_b_;
       Box &lower=align_high_box_==0?box_b_:box_a_;
       if (!fresh_height_(higher,now)) {
@@ -919,10 +922,11 @@ void JSDrive2::poll_alignment_() {
         if (high<override_high_last_) {
           override_high_last_=high; override_last_progress_=now;
         }
-        if (high==low) {
+        if (high-low<=tenths(COARSE_RELEASE)) {
           set_box_action_(higher,false); send_box_(higher,CMD_IDLE);
           align_=AlignState::SETTLE; align_started_=now;
-          ESP_LOGI(TAG,"DOWN synchronization reached %.1f; verifying stop",higher.live_height);
+          ESP_LOGI(TAG,"DOWN synchronization coarse release at %.1f; target %.1f",
+                   higher.live_height,lower.last_good);
           return;
         }
         if (now-override_last_progress_>1500) {
@@ -931,12 +935,20 @@ void JSDrive2::poll_alignment_() {
         if (now-higher.last_nonidle_tx>=STREAM_MS) send_box_(higher,CMD_DOWN);
         return;
       }
-      if (now-align_started_<400) return;
+      if (align_==AlignState::OVERRIDE_PULSE) {
+        if (high==low || now-align_started_>=FINE_PULSE_MS) {
+          set_box_action_(higher,false); send_box_(higher,CMD_IDLE);
+          align_=AlignState::SETTLE; align_started_=now;
+        } else if (now-higher.last_nonidle_tx>=STREAM_MS) {
+          send_box_(higher,CMD_DOWN);
+        }
+        return;
+      }
+      if (now-align_started_<FINE_SETTLE_MS) return;
       if (high>low) {
-        // Stopping can leave the higher box one step short. Continue the same
-        // held DOWN command after verifying the lower box stayed fixed.
-        align_=AlignState::OVERRIDE_RUN;
-        override_high_last_=high; override_last_progress_=now;
+        // Once near the target, advance only in bounded taps and allow the
+        // mechanism to coast to a stop after every tap.
+        align_=AlignState::OVERRIDE_PULSE; align_started_=now;
         set_box_action_(higher,true); send_box_(higher,CMD_DOWN);
         return;
       }
@@ -976,11 +988,15 @@ void JSDrive2::poll_alignment_() {
     align_lower_before_=tenths(lower.live_height);
     override_high_last_=tenths(higher.live_height);
     override_last_progress_=now;
-    align_=AlignState::OVERRIDE_RUN;
+    align_=abs(tenths(higher.live_height)-tenths(lower.live_height))>
+                    tenths(COARSE_RELEASE)
+                ? AlignState::OVERRIDE_RUN : AlignState::OVERRIDE_PULSE;
+    align_started_=now;
     set_box_action_(lower,false); send_box_(lower,CMD_IDLE);
     set_box_action_(higher,true); send_box_(higher,CMD_DOWN);
-    ESP_LOGW(TAG,"DOWN synchronization: holding box %s DOWN from %.1f to %.1f",
-             higher.name,higher.live_height,lower.live_height);
+    ESP_LOGW(TAG,"DOWN synchronization: driving box %s from %.1f to %.1f (%s)",
+             higher.name,higher.live_height,lower.live_height,
+             align_==AlignState::OVERRIDE_RUN?"coarse":"fine pulse");
     return;
   }
   if (align_==AlignState::PULSE) {
@@ -1025,10 +1041,12 @@ void JSDrive2::poll_alignment_() {
     align_wake_attempted_=false;
     update_confirmed_(); if (completed) publish_(); return;
   }
+  // Let both mechanisms coast and finish reporting before declaring a
+  // stopped mismatch or starting a correction pulse.
+  if (now-box_a_.last_change<STOP_SETTLE_MS || now-box_b_.last_change<STOP_SETTLE_MS) return;
   if (abs(d)>=tenths(hard_skew_)) {
     fail_("stopped boxes exceed hard skew"); return;
   }
-  if (now-box_a_.last_change<400 || now-box_b_.last_change<400) return;
   const uint8_t high=d>0?0:1;
   if (align_high_box_!=0xFF && align_high_box_!=high) {
     fail_("correction crossed past the lower box"); return;

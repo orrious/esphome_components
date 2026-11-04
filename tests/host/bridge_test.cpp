@@ -209,12 +209,23 @@ int main() {
   {
     Fixture f;
     height(f.a,299); height(f.b,297); tick(f.bridge);
-    height(f.a,299); height(f.b,297); tick(f.bridge,400);
+    for (int i=0;i<11;i++) { height(f.a,299); height(f.b,297); tick(f.bridge,100); }
+    assert(!f.a_action.level && !f.b_action.level); // allow stopped desk to settle
+    height(f.a,299); height(f.b,297); tick(f.bridge,100);
     assert(f.a_action.level && !f.b_action.level); // higher box only
     for (int i=0;i<18;i++) tick(f.bridge,10);
     assert(f.a_action.level); // long correction remains bounded at 190 ms
     tick(f.bridge,10);
     assert(!f.a_action.level && !f.b_action.level);
+  }
+  {
+    Fixture f;
+    height(f.a,300); height(f.b,295); tick(f.bridge);
+    for (int i=0;i<11;i++) { height(f.a,300); height(f.b,295); tick(f.bridge,100); }
+    assert(f.bridge.armed_for_test()); // hard skew is not declared during coast time
+    height(f.a,300); height(f.b,295); tick(f.bridge,100);
+    assert(!f.bridge.armed_for_test()); // stable 0.5 mismatch becomes SnC after 1.2 s
+    assert(shows_snc(f.remote));
   }
   {
     Fixture f;
@@ -288,10 +299,16 @@ int main() {
       assert(f.a_action.level && !f.b_action.level); // held continuously past 190 ms
       assert(f.a.tx.back()[2]==0x40);
     }
-    height(f.a,337); height(f.b,286); tick(f.bridge,10);
+    height(f.a,289); height(f.b,286); tick(f.bridge,10);
+    assert(!f.a_action.level && !f.b_action.level); // release 0.3 above target
+    for (int i=0;i<49;i++) { height(f.a,289); height(f.b,286); tick(f.bridge,10); }
+    assert(!f.a_action.level && !f.b_action.level);
+    height(f.a,289); height(f.b,286); tick(f.bridge,10);
+    assert(f.a_action.level && !f.b_action.level); // bounded fine pulse
+    height(f.a,288); height(f.b,286); tick(f.bridge,10);
     height(f.a,286); height(f.b,286); tick(f.bridge,10);
     assert(!f.a_action.level && !f.b_action.level); // release DOWN at the lower height
-    for (int i=0;i<40;i++) { height(f.a,286); height(f.b,286); tick(f.bridge,10); }
+    for (int i=0;i<50;i++) { height(f.a,286); height(f.b,286); tick(f.bridge,10); }
     assert(f.bridge.recovered_alignment_cleared());
     command(f.remote,0x40); height(f.a,286); height(f.b,286); tick(f.bridge,10);
     assert(!f.a_action.level && !f.b_action.level); // held DOWN is consumed after recovery
@@ -337,6 +354,17 @@ int main() {
     f.remote_action.level=false; command(f.remote,0); tick(f.bridge,10);
     assert(!f.a_action.level && !f.b_action.level); // releasing DOWN stops recovery
     assert(!f.bridge.armed_for_test());
+  }
+  {
+    Fixture f;
+    height(f.a,300); height(f.b,298); tick(f.bridge);
+    f.bridge.simulate_failed_alignment();
+    f.remote_action.level=true; command(f.remote,0x40); tick(f.bridge,10);
+    assert(f.a_action.level && !f.b_action.level);
+    height(f.a,297); height(f.b,298); tick(f.bridge,10); // simulated overrun
+    assert(!f.a_action.level && !f.b_action.level);
+    command(f.remote,0x40); tick(f.bridge,10);
+    assert(!f.a_action.level && !f.b_action.level); // never chase by moving former lower side
   }
   std::cout << "jsdrive2 host bridge tests passed\n";
 }
