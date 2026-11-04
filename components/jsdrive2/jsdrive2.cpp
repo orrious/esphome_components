@@ -224,7 +224,7 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
     if (remote_button_down_) { set_actions_(false,false); send_both_(CMD_IDLE,false); }
     remote_button_down_=false; remote_command_=0;
     remote_wake_consumed_=false;
-    recovery_started_=0; recovery_attempted_=false;
+    recovery_started_=0; recovery_last_attempt_=0; recovery_attempted_=false;
     return;
   }
   // Recovery is a command from the handset UART, not a motion command. Some
@@ -236,10 +236,17 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
     set_actions_(false,false); send_both_(CMD_IDLE,false);
     if (!armed_) {
       if (recovery_started_==0) recovery_started_=now;
-      if (!recovery_attempted_ && now-recovery_started_>=500) {
-        recovery_attempted_=true; recover_();
+      if (!recovery_attempted_ && now-recovery_started_>=500 &&
+          (recovery_last_attempt_==0 || now-recovery_last_attempt_>=250)) {
+        recovery_last_attempt_=now;
+        recovery_attempted_=recover_();
       }
     }
+    remote_button_down_=true; remote_command_=command;
+    return;
+  }
+  if (override_align_) {
+    fail_("UP+DOWN override interrupted by handset");
     remote_button_down_=true; remote_command_=command;
     return;
   }
@@ -256,10 +263,10 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
       stop("simultaneous handset buttons took control");
     set_actions_(false,false); send_both_(CMD_IDLE,false);
     remote_button_down_=true; remote_command_=command;
-    recovery_started_=0; recovery_attempted_=false;
+    recovery_started_=0; recovery_last_attempt_=0; recovery_attempted_=false;
     return;
   }
-  recovery_started_=0; recovery_attempted_=false;
+  recovery_started_=0; recovery_last_attempt_=0; recovery_attempted_=false;
   const bool preset=command==0x02 || command==0x04 || command==0x08 || command==0x10;
   const bool memory=command==0x01 || preset;
   const bool manual=command==0x20 || command==0x40;
@@ -385,7 +392,7 @@ void JSDrive2::handle_box_(Box &box, const uint8_t f[5]) {
   }
   update_confirmed_();
   if ((motion_!=MotionState::IDLE || box_a_.action || box_b_.action) &&
-      motion_!=MotionState::PRESET && wake_ready_() &&
+      motion_!=MotionState::PRESET && !override_align_ && wake_ready_() &&
       !std::isnan(box_a_.live_height) && !std::isnan(box_b_.live_height) &&
       fabsf(box_a_.live_height-box_b_.live_height)+0.001f>=hard_skew_) fail_("box height difference reached hard limit");
 }
@@ -558,7 +565,7 @@ void JSDrive2::fail_(const std::string &reason, bool disarm, bool show_sos) {
   for (Box *box : {&box_a_,&box_b_})
     if (box->wake==WakeState::ASSERT || box->wake==WakeState::HOLD) box->wake=WakeState::FAILED;
   motion_=MotionState::IDLE; align_=AlignState::IDLE; clear_preset_();
-  align_wake_attempted_=false;
+  align_wake_attempted_=false; override_align_=false;
   target_height_=NAN; direction_=0; pending_preset_=0;
   fault_=reason; if (disarm) armed_=false;
   if (show_sos) { sos_=true; sos_until_=millis()+3000; error_="SOS: "+reason; }
@@ -605,18 +612,12 @@ bool JSDrive2::request_height(float height) {
 }
 
 bool JSDrive2::recall_preset(uint8_t preset) {
-  if (preset<1 || preset>4 || !armed_ || motion_!=MotionState::IDLE ||
-      remote_button_down_ || remote_action_) return false;
-  const uint32_t now=millis();
-  pending_preset_=preset; motion_=MotionState::DISCOVER_WAIT;
-  motion_started_=phase_started_=now;
-  for (Box *box : {&box_a_,&box_b_}) {
-    if (box->wake==WakeState::FAILED) box->wake=WakeState::IDLE;
-    if (!fresh_height_(*box,now) || box->display==DisplayState::BLANK)
-      start_wake_(*box);
-  }
-  ESP_LOGI(TAG,"Recall preset %u: waiting for fresh settled box heights",preset);
-  return true;
+  (void) preset;
+  // A controller accepted an HA preset while the other stayed put. An idle
+  // frame cannot cancel the resulting autonomous travel, so this operation
+  // remains unavailable until a verified dual-box stop exists.
+  ESP_LOGW(TAG,"HA preset recall disabled: independent box travel is unsafe");
+  return false;
 }
 
 bool JSDrive2::save_preset(uint8_t preset) {
@@ -628,6 +629,11 @@ bool JSDrive2::save_preset(uint8_t preset) {
 void JSDrive2::stop(const char *reason) { fail_(reason,false,false); }
 void JSDrive2::arm() {
   if (armed_) return;
+  if (!std::isnan(box_a_.last_good) && !std::isnan(box_b_.last_good) &&
+      abs(tenths(box_a_.last_good)-tenths(box_b_.last_good))>=tenths(hard_skew_)) {
+    ESP_LOGW(TAG,"Arm refused: large skew requires held UP+DOWN override");
+    return;
+  }
   if (!recover_()) ESP_LOGW(TAG,"Arm refused until both boxes are healthy and settled");
 }
 void JSDrive2::disarm() { stop("disarmed"); armed_=false; publish_(); }
@@ -638,18 +644,20 @@ bool JSDrive2::recover_() {
   const bool linked_b=box_b_.seen && box_b_.awake && now-box_b_.last_frame<=LINK_MS;
   if (!linked_a || !linked_b ||
       std::isnan(box_a_.last_good) || std::isnan(box_b_.last_good) ||
-      now-box_a_.last_change<800 || now-box_b_.last_change<800 ||
-      motion_!=MotionState::IDLE || align_!=AlignState::IDLE ||
-      abs(tenths(box_a_.last_good)-tenths(box_b_.last_good))>=tenths(hard_skew_)) {
+      motion_!=MotionState::IDLE || align_!=AlignState::IDLE) {
     ESP_LOGW(TAG,"Recovery chord waiting for healthy, stopped boxes");
     return false;
   }
   set_actions_(false,false); sos_=false; sos_until_=0;
   if (box_a_.wake==WakeState::FAILED) box_a_.wake=WakeState::IDLE;
   if (box_b_.wake==WakeState::FAILED) box_b_.wake=WakeState::IDLE;
-  armed_=true; fault_="none"; error_="none";
+  // The chord explicitly overrides the ordinary 0.5 limit. Keep all normal
+  // commands locked out until fresh reports show that the boxes match.
+  armed_=false; override_align_=true; override_started_=now;
+  fault_="override alignment in progress"; error_="none";
   align_attempts_=0; align_high_box_=0xFF; align_wake_attempted_=false;
-  ESP_LOGI(TAG,"Recovered by held UP+DOWN; boxes %.1f and %.1f",
+  align_gap_before_=0; align_no_progress_=0;
+  ESP_LOGW(TAG,"UP+DOWN override: lowering higher box from %.1f / %.1f",
            box_a_.last_good,box_b_.last_good);
   publish_(); return true;
 }
@@ -736,9 +744,12 @@ void JSDrive2::poll_motion_() {
 
 void JSDrive2::poll_alignment_() {
   uint32_t now=millis();
-  if (!armed_) {
+  if (!armed_ && !override_align_) {
     if (align_!=AlignState::IDLE) { set_actions_(false,false); align_=AlignState::IDLE; }
     return;
+  }
+  if (override_align_ && now-override_started_>90000) {
+    fail_("UP+DOWN override timed out"); return;
   }
   if (align_==AlignState::PULSE) {
     Box &higher=align_high_box_==0?box_a_:box_b_;
@@ -756,20 +767,15 @@ void JSDrive2::poll_alignment_() {
         motion_==MotionState::FINE_SETTLE) || remote_button_down_ || remote_action_) return;
   if (!box_ready_(box_a_,now) || !box_ready_(box_b_,now) ||
       std::isnan(box_a_.last_good) || std::isnan(box_b_.last_good)) {
-    if (align_==AlignState::SETTLE && now-align_started_>2000)
+    if ((align_==AlignState::SETTLE && now-align_started_>2000) ||
+        (override_align_ && now-override_started_>5000))
       fail_("box link lost after correction pulse");
     return;
   }
   if (align_==AlignState::SETTLE && now-align_started_<800) return;
   int d=tenths(box_a_.last_good)-tenths(box_b_.last_good);
-  if (d==0) {
-    if (align_!=AlignState::IDLE) ESP_LOGI(TAG,"Boxes aligned at %.1f",box_a_.last_good);
-    align_=AlignState::IDLE; align_attempts_=0; align_high_box_=0xFF;
-    align_wake_attempted_=false;
-    update_confirmed_(); return;
-  }
-  if (abs(d)>=tenths(hard_skew_)) { fail_("stopped boxes exceed hard skew"); return; }
-  if (!fresh_height_(box_a_,now) || !fresh_height_(box_b_,now)) {
+  if ((d!=0 || override_align_) &&
+      (!fresh_height_(box_a_,now) || !fresh_height_(box_b_,now))) {
     if (!align_wake_attempted_) {
       align_wake_attempted_=true; align_wake_started_=now;
       for (Box *box : {&box_a_,&box_b_}) {
@@ -782,16 +788,49 @@ void JSDrive2::poll_alignment_() {
     }
     return;
   }
+  if (override_align_ && align_==AlignState::SETTLE && align_high_box_!=0xFF) {
+    const Box &lower=align_high_box_==0?box_b_:box_a_;
+    if (tenths(lower.live_height)!=align_lower_before_) {
+      fail_("lower box changed during UP+DOWN override"); return;
+    }
+    if (abs(d)>align_gap_before_) {
+      fail_("UP+DOWN override increased height difference"); return;
+    }
+  }
+  if (d==0) {
+    const bool completed=align_!=AlignState::IDLE || override_align_;
+    if (completed) ESP_LOGI(TAG,"Boxes aligned at %.1f",box_a_.last_good);
+    if (override_align_) {
+      override_align_=false; armed_=true; fault_="none"; error_="none";
+      ESP_LOGI(TAG,"UP+DOWN override complete; both boxes at %.1f",box_a_.last_good);
+    }
+    align_=AlignState::IDLE; align_attempts_=0; align_high_box_=0xFF;
+    align_wake_attempted_=false; align_no_progress_=0;
+    update_confirmed_(); if (completed) publish_(); return;
+  }
+  if (!override_align_ && abs(d)>=tenths(hard_skew_)) {
+    fail_("stopped boxes exceed hard skew"); return;
+  }
   if (now-box_a_.last_change<400 || now-box_b_.last_change<400) return;
+  if (align_==AlignState::SETTLE && override_align_) {
+    if (abs(d)==align_gap_before_) align_no_progress_++;
+    else align_no_progress_=0;
+    if (align_no_progress_>=3) {
+      fail_("UP+DOWN override made no height progress"); return;
+    }
+  }
   const uint8_t high=d>0?0:1;
   if (align_high_box_!=0xFF && align_high_box_!=high) {
     fail_("correction crossed past the lower box"); return;
   }
-  if (align_attempts_>=3) { fail_("three alignment pulses did not synchronize boxes"); return; }
+  if (align_attempts_>=(override_align_?80:3)) {
+    fail_("alignment pulse limit reached"); return;
+  }
   Box &higher=high==0?box_a_:box_b_;
   // A 190 ms hold is the shortest tap exercised by the bridge's target
   // positioning path. Stop sooner if the higher box reports the lower height.
   align_duration_=190;
+  align_gap_before_=abs(d); align_lower_before_=tenths(high==0?box_b_.last_good:box_a_.last_good);
   align_high_box_=high; align_attempts_++;
   align_=AlignState::PULSE; align_started_=now;
   set_box_action_(higher,true); send_box_(higher,CMD_DOWN);

@@ -12,17 +12,11 @@ struct ProbeBridge : JSDrive2 {
   void simulate_failed_alignment() {
     armed_=false; align_attempts_=3; align_high_box_=0; align_wake_attempted_=true;
   }
+  bool override_active() const {
+    return override_align_ && !armed_;
+  }
   bool recovered_alignment_cleared() const {
-    return armed_ && align_attempts_==0 && align_high_box_==0xFF && !align_wake_attempted_;
-  }
-  bool recovered_and_rechecking() const {
-    return armed_ && align_attempts_==0 && align_high_box_==0xFF;
-  }
-  bool preparing_preset(uint8_t n) const {
-    return motion_==MotionState::DISCOVER_WAIT && pending_preset_==n;
-  }
-  bool executing_preset(uint8_t n) const {
-    return motion_==MotionState::PRESET && preset_phase_==PresetPhase::ANNOUNCEMENT && active_preset_==n;
+    return armed_ && !override_align_ && align_attempts_==0;
   }
 };
 
@@ -153,37 +147,40 @@ int main() {
     f.pair(285); f.bridge.simulate_failed_alignment();
     height(f.a,285); height(f.b,285); tick(f.bridge,900);
     f.bridge.arm();
+    assert(f.bridge.override_active());
+    height(f.a,285); height(f.b,285); tick(f.bridge);
     assert(f.bridge.recovered_alignment_cleared());
   }
   {
     Fixture f;
     f.pair(285); blank(f.a); blank(f.b); tick(f.bridge,10);
-    assert(f.bridge.recall_preset(3));
-    assert(f.bridge.preparing_preset(3));
+    assert(!f.bridge.recall_preset(3));
     for (const auto *u : {&f.a,&f.b})
       for (const auto &frame : u->tx) assert(frame[2]!=0x08);
-    tick(f.bridge,22); // bounded UP wake has released pin 5
-    height(f.a,285); height(f.b,285); tick(f.bridge,400);
-    assert(f.bridge.executing_preset(3));
-    assert(f.a_action.level && f.b_action.level);
-    assert(f.a.tx.back()[2]==0x08 && f.b.tx.back()[2]==0x08);
-    tick(f.bridge,1); // the next loop must not release between 10 ms frames
-    assert(f.a_action.level && f.b_action.level);
-    for (int i=0;i<18;i++) tick(f.bridge,10);
-    assert(f.a_action.level && f.b_action.level);
-    tick(f.bridge,9);
     assert(!f.a_action.level && !f.b_action.level);
   }
   {
     Fixture f;
-    height(f.a,287); height(f.b,286); tick(f.bridge);
+    height(f.a,338); height(f.b,286); tick(f.bridge);
     f.bridge.simulate_failed_alignment();
-    blank(f.a); blank(f.b); tick(f.bridge,900);
+    height(f.a,338); height(f.b,286); tick(f.bridge,900);
     // The recovery chord is valid even when the handset action line is low.
     for (int i=0;i<7;i++) {
-      blank(f.a); blank(f.b); command(f.remote,0x60); tick(f.bridge,100);
+      height(f.a,338); height(f.b,286); command(f.remote,0x60); tick(f.bridge,100);
     }
-    assert(f.bridge.recovered_and_rechecking());
+    assert(f.bridge.override_active());
+    assert(!f.a_action.level && !f.b_action.level);
+    command(f.remote,0); height(f.a,338); height(f.b,286); tick(f.bridge,10);
+    assert(f.a_action.level && !f.b_action.level); // only the higher box gets DOWN
+    assert(f.a.tx.back()[2]==0x40);
+    for (int i=0;i<19;i++) tick(f.bridge,10);
+    assert(!f.a_action.level && !f.b_action.level);
+    height(f.a,337); height(f.b,286); tick(f.bridge,800);
+    height(f.a,337); height(f.b,286); tick(f.bridge,400);
+    assert(f.a_action.level && !f.b_action.level);
+    for (int i=0;i<19;i++) tick(f.bridge,10);
+    height(f.a,286); height(f.b,286); tick(f.bridge,800);
+    assert(f.bridge.recovered_alignment_cleared());
   }
   std::cout << "jsdrive2 host bridge tests passed\n";
 }
