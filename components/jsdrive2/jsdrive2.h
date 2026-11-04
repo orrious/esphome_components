@@ -144,6 +144,7 @@ class JSDrive2 : public Component {
   float preset_start_{NAN}, preset_target_{NAN}, preset_raw_a_{NAN}, preset_raw_b_{NAN};
   uint32_t preset_last_change_{0}, preset_first_motion_{0}, preset_pair_wait_{0};
   bool preset_from_handset_{false}, preset_announcement_visible_{false};
+  const uint8_t *preset_cancel_frame_{nullptr}; uint32_t preset_cancel_until_{0};
   std::string fault_{"none"}, error_{"none"}; uint32_t last_publish_{0};
 
   sensor::Sensor *height_sensor_{nullptr}, *height_a_sensor_{nullptr}, *height_b_sensor_{nullptr}, *height_difference_sensor_{nullptr};
@@ -189,6 +190,7 @@ class JSDrive2 : public Component {
   void handle_preset_height_(Box &box, float height, uint32_t now);
   void commit_preset_pair_(float height, uint32_t now);
   void poll_preset_(uint32_t now);
+  void poll_preset_cancel_(uint32_t now);
   bool recover_();
   bool box_ready_(const Box &box, uint32_t now) const;
   bool trusted_equal_() const;

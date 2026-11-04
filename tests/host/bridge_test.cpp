@@ -212,6 +212,21 @@ int main() {
   }
   {
     Fixture f;
+    f.pair(285); command(f.remote,0); tick(f.bridge,10);
+    f.remote_action.level=true; command(f.remote,0x08); tick(f.bridge,10);
+    height(f.a,440); height(f.b,440); tick(f.bridge,10);
+    f.remote_action.level=false; command(f.remote,0); tick(f.bridge,10);
+    height(f.a,430); tick(f.bridge,10); // A starts travel without B
+    tick(f.bridge,480);
+    blank(f.a); blank(f.b); tick(f.bridge,30);
+    assert(!f.bridge.armed_for_test());
+    assert(f.a_action.level && f.b_action.level);
+    assert(f.a.tx.back()[2]==0x40 && f.b.tx.back()[2]==0x40); // opposite arrow cancels
+    tick(f.bridge,190);
+    assert(!f.a_action.level && !f.b_action.level);
+  }
+  {
+    Fixture f;
     f.pair(285); tick(f.bridge,400); f.pair(285);
     f.a_awake.level=false; tick(f.bridge,10);
     assert(f.bridge.recall_preset(3));

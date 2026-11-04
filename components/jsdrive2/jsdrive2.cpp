@@ -166,6 +166,7 @@ void JSDrive2::poll_automatic_wake_(uint32_t now) {
 }
 
 void JSDrive2::poll_box_idle_(Box &box, uint32_t now) {
+  if (preset_cancel_until_!=0) return;
   if (box.wake==WakeState::ASSERT || box.wake==WakeState::HOLD) return;
   if (box.action && now-box.last_nonidle_tx<20) return;
   if (now-box.last_tx>=STREAM_MS) send_box_(box,CMD_IDLE);
@@ -187,12 +188,14 @@ void JSDrive2::poll_action_watchdog_(uint32_t now) {
     const bool bridge=armed_ && motion_!=MotionState::IDLE &&
                       motion_!=MotionState::DISCOVER_WAIT &&
                       now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
+    const bool preset_cancel=preset_cancel_until_!=0 &&
+                             now-box->last_nonidle_tx<=ACTION_WATCHDOG_MS;
     if (!box->awake && !wake_pulse) {
       set_box_action_(*box,false);
       fail_("box slept while action output was high");
       return;
     }
-    if (!(wake_pulse || align_pulse || handset || bridge)) {
+    if (!(wake_pulse || align_pulse || handset || bridge || preset_cancel)) {
       set_box_action_(*box,false);
       if (align_==AlignState::PULSE) fail_("alignment command watchdog expired");
       else if (motion_!=MotionState::IDLE) fail_("action watchdog expired");
@@ -251,6 +254,7 @@ void JSDrive2::handle_remote_(const uint8_t f[5]) {
   remote_seen_=true; remote_last_frame_=now; set_handset_buttons_(command);
   bool physical=remote_action_pin_ != nullptr && remote_action_pin_->digital_read();
   remote_action_=physical;
+  if (preset_cancel_until_!=0) return;
   if (command==0) {
     if (remote_button_down_) { set_actions_(false,false); send_both_(CMD_IDLE,false); }
     remote_button_down_=false; remote_command_=0;
@@ -566,6 +570,21 @@ void JSDrive2::poll_preset_(uint32_t now) {
   // tenths are resolved by the final settlement and alignment path.
 }
 
+void JSDrive2::poll_preset_cancel_(uint32_t now) {
+  if (preset_cancel_until_==0) return;
+  if (!box_a_.awake || !box_b_.awake) {
+    preset_cancel_until_=0; preset_cancel_frame_=nullptr;
+    set_actions_(false,false);
+    return;
+  }
+  if (int32_t(now-preset_cancel_until_)>=0) {
+    preset_cancel_until_=0; preset_cancel_frame_=nullptr;
+    set_actions_(false,false); send_box_(box_a_,CMD_IDLE); send_box_(box_b_,CMD_IDLE);
+    return;
+  }
+  if (now-last_command_tx_>=STREAM_MS) send_both_(preset_cancel_frame_,true);
+}
+
 void JSDrive2::update_confirmed_() {
   if (trusted_equal_()) {
     float h=(box_a_.last_good+box_b_.last_good)/2.0f;
@@ -598,6 +617,19 @@ void JSDrive2::send_remote_status_() {
 }
 
 void JSDrive2::fail_(const std::string &reason, bool disarm, bool show_sos) {
+  // Idle frames alone do not cancel autonomous preset travel. A short press
+  // of the opposite arrow is the observed handset cancel operation.
+  const bool was_preset=motion_==MotionState::PRESET;
+  float preset_direction=NAN;
+  if (was_preset && !std::isnan(preset_start_)) {
+    if (!std::isnan(preset_target_)) preset_direction=preset_target_-preset_start_;
+    else {
+      const float da=std::isnan(preset_raw_a_)?0:preset_raw_a_-preset_start_;
+      const float db=std::isnan(preset_raw_b_)?0:preset_raw_b_-preset_start_;
+      preset_direction=fabsf(da)>=fabsf(db)?da:db;
+    }
+  }
+  preset_cancel_until_=0; preset_cancel_frame_=nullptr;
   set_actions_(false,false); send_box_(box_a_,CMD_IDLE); send_box_(box_b_,CMD_IDLE);
   for (Box *box : {&box_a_,&box_b_})
     if (box->wake==WakeState::ASSERT || box->wake==WakeState::HOLD) box->wake=WakeState::FAILED;
@@ -605,6 +637,12 @@ void JSDrive2::fail_(const std::string &reason, bool disarm, bool show_sos) {
   align_wake_attempted_=false; override_align_=false;
   target_height_=NAN; direction_=0; pending_preset_=0;
   fault_=reason; if (disarm) armed_=false;
+  if (!std::isnan(preset_direction) && fabsf(preset_direction)>=0.05f) {
+    preset_cancel_frame_=preset_direction>0?CMD_DOWN:CMD_UP;
+    preset_cancel_until_=millis()+190;
+    send_both_(preset_cancel_frame_,true);
+    ESP_LOGW(TAG,"Preset cancel: opposite arrow sent to both boxes for 190 ms");
+  }
   if (show_sos) { sos_=true; sos_until_=millis()+3000; error_="SOS: "+reason; }
   ESP_LOGE(TAG,"Stopped: %s%s",reason.c_str(),disarm?"; bridge disarmed":""); publish_();
 }
@@ -938,6 +976,7 @@ void JSDrive2::loop() {
   poll_automatic_wake_(now);
   poll_motion_();
   poll_alignment_();
+  poll_preset_cancel_(now);
   poll_action_watchdog_(millis());
   poll_box_idle_(box_a_,now); poll_box_idle_(box_b_,now);
   if (now-remote_last_tx_>=STREAM_MS) send_remote_status_();
