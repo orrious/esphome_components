@@ -68,7 +68,6 @@ int main() {
     f.pair(285);
     f.remote_action.level=true; command(f.remote,0x20); tick(f.bridge,10);
     assert(f.activity.state=="UP" && f.up.state);
-    assert(f.a.flush_count==1 && f.b.flush_count==1);
     f.remote_action.level=false; command(f.remote,0); tick(f.bridge,10);
     assert(f.activity.state=="IDLE" && !f.up.state);
   }
@@ -84,15 +83,6 @@ int main() {
     f.pair(285);
     assert(f.bridge.request_height(30.0f)); tick(f.bridge,10);
     assert(f.activity.state=="UP" && f.up.state); // same activity as handset UP
-    assert(f.a.flush_count==1 && f.b.flush_count==1); // same clean pin-5 edge
-  }
-  {
-    Fixture f;
-    f.pair(285);
-    f.b.flush_result=esphome::uart::UARTFlushResult::UART_FLUSH_RESULT_TIMEOUT;
-    assert(f.bridge.request_height(30.0f)); tick(f.bridge,10);
-    assert(!f.a_action.level && !f.b_action.level);
-    assert(!f.bridge.armed_for_test()); // never raise pin 5 with queued idle bytes
   }
   {
     Fixture f;

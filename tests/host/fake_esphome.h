@@ -26,14 +26,10 @@ class GPIOPin {
   virtual void digital_write(bool value) { level=value; }
 };
 namespace uart {
-enum class UARTFlushResult { UART_FLUSH_RESULT_SUCCESS, UART_FLUSH_RESULT_TIMEOUT,
-                             UART_FLUSH_RESULT_FAILED, UART_FLUSH_RESULT_ASSUMED_SUCCESS };
 class UARTComponent {
  public:
   std::deque<uint8_t> rx;
   std::vector<std::vector<uint8_t>> tx;
-  unsigned flush_count{0};
-  UARTFlushResult flush_result{UARTFlushResult::UART_FLUSH_RESULT_SUCCESS};
   virtual ~UARTComponent() = default;
   virtual bool available() { return !rx.empty(); }
   virtual bool read_byte(uint8_t *out) {
@@ -41,8 +37,6 @@ class UARTComponent {
     *out=rx.front(); rx.pop_front(); return true;
   }
   virtual void write_array(const uint8_t *data, size_t len) { tx.emplace_back(data,data+len); }
-  virtual UARTFlushResult flush() { flush_count++; return flush_result; }
-  virtual void set_flush_timeout(uint32_t) {}
   void feed(std::initializer_list<uint8_t> frame) { rx.insert(rx.end(),frame.begin(),frame.end()); }
 };
 }

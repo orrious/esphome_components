@@ -53,8 +53,6 @@ static const char *command_name(uint8_t command) {
 void JSDrive2::setup() {
   for (GPIOPin *pin : {remote_action_pin_, remote_awake_pin_, box_a_.action_pin, box_b_.action_pin,
                        box_a_.awake_pin, box_b_.awake_pin}) if (pin != nullptr) pin->setup();
-  for (uart::UARTComponent *bus : {box_a_.uart,box_b_.uart})
-    if (bus != nullptr) bus->set_flush_timeout(20);
   set_actions_(false,false);
   if (remote_awake_pin_ != nullptr) remote_awake_pin_->digital_write(true);
   if (activity_sensor_) activity_sensor_->publish_state("IDLE");
@@ -103,28 +101,9 @@ void JSDrive2::send_box_(Box &box, const uint8_t frame[5]) {
 }
 
 void JSDrive2::send_both_(const uint8_t frame[5], bool action) {
-  const bool rising=action && (!box_a_.action || !box_b_.action);
-  if (rising) {
-    // Match the validated debug bridge: drain idle frames from both UARTs
-    // before the pin-5 rising edge of a new press.
-    if (box_a_.uart==nullptr || box_b_.uart==nullptr) {
-      motion_=MotionState::IDLE; fail_("box UART unavailable before action"); return;
-    }
-    const auto a=box_a_.uart->flush(), b=box_b_.uart->flush();
-    auto drained=[](uart::UARTFlushResult result) {
-      return result==uart::UARTFlushResult::UART_FLUSH_RESULT_SUCCESS ||
-             result==uart::UARTFlushResult::UART_FLUSH_RESULT_ASSUMED_SUCCESS;
-    };
-    if (!drained(a) || !drained(b)) {
-      // A command behind queued idle bytes cannot be paired reliably with
-      // pin 5. Stop without trying another UART command on a failed link.
-      motion_=MotionState::IDLE; fail_("box UART did not drain before action"); return;
-    }
-  }
   set_actions_(action,action); send_box_(box_a_,frame); send_box_(box_b_,frame);
   set_bridge_command_(action?frame[2]:0);
   last_command_tx_=millis();
-  if (rising) ESP_LOGI(TAG,"Both box action outputs asserted with command 0x%02X",frame[2]);
 }
 
 bool JSDrive2::box_ready_(const Box &box, uint32_t now) const {

@@ -49,10 +49,8 @@ settled heights before rearming. The lower box receives only idle frames.
 
 Each box has its own bounded wake attempt. The bridge keeps an independent
 10 ms idle stream to each box and a synthesized status stream to the handset.
-The handset display blanks when both box displays time out. At the start of a
-new command, the bridge drains queued idle frames from both box UARTs before
-raising pin 5. Active outputs have a 30 ms command watchdog (60 ms during the
-continuous recovery), and a
+The handset display blanks when both box displays time out. Active pin 5 outputs
+have a 30 ms command watchdog (60 ms during the continuous recovery), and a
 lost UART link or awake signal lowers
 the outputs. A normal first-button wake does not show SOS while fresh heights
 are pending. Simultaneous button masks are never sent to either box.
