@@ -33,7 +33,7 @@ external_components:
       type: git
       url: https://github.com/orrious/esphome_components
       # Pinned to the jsdrive2 version currently flashed on this desk.
-      ref: 7d96dce186fdca4bb1818affbef21f2d2b556f3c
+      ref: e66fb872a4b9bdfb2c03c67aaf828107d395940b
     components: [jsdrive2]
 
 # All three WP-CB01 links are 9600 baud, 8 data bits, no parity, 1 stop bit.
@@ -146,6 +146,8 @@ jsdrive2:
 
   operation:
     name: Desk Operation
+  activity:
+    name: Desk Activity
   last_fault:
     name: Desk Last Fault
   box_a_display:
